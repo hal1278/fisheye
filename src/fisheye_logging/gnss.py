@@ -64,6 +64,12 @@ class _TeeStream:
             self.sink.write(data)
         return data
 
+    def readline(self, size: int = -1) -> bytes:
+        data = self.source.readline(size)
+        if data:
+            self.sink.write(data)
+        return data
+
 
 class GnssLogger:
     def __init__(self, config: GnssConfig, output_dir: Path):
@@ -285,7 +291,8 @@ class GnssLogger:
 
     def raise_if_failed(self) -> None:
         if self._error is not None:
-            raise GnssError("GNSS logging failed") from self._error
+            detail = f"{type(self._error).__name__}: {self._error}"
+            raise GnssError(f"GNSS logging failed: {detail}") from self._error
 
     def stop(self) -> None:
         self._stop.set()
