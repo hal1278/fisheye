@@ -1,0 +1,46 @@
+[session]
+output_dir = "recordings"
+
+[camera]
+backend = "dshow"
+device = "@device_pnp_\\\\?\\usb#vid_046d&pid_0991&mi_00#..."
+input_codec = "mjpeg"
+video_size = "960x720"
+framerate = 15
+output_codec = "copy"
+segment_seconds = 600
+anchor_interval_seconds = 1.0
+ffmpeg = "ffmpeg"
+
+[gnss]
+port = "COM5"
+baudrate = 9600
+timeout_seconds = 0.2
+measurement_rate_ms = 1000
+nav_rate = 1
+time_ref = 1
+
+[gnss.timepulse]
+index = 0
+frequency_hz = 1
+duty_cycle = 0.1
+active = true
+align_to_tow = true
+polarity = "rising"
+time_grid = "utc"
+lock_gnss_frequency = true
+
+# USB output rate in navigation/measurement epochs. Unspecified messages are left unchanged.
+# Put every output that should be changed here; message selection is configuration, not logger logic.
+[gnss.messages]
+"TIM-TP" = 1
+"NAV-PVT" = 1
+"GGA" = 0
+"GLL" = 0
+"GSA" = 0
+"GSV" = 0
+"RMC" = 0
+"VTG" = 0
+"GRS" = 0
+"GST" = 0
+"ZDA" = 0
