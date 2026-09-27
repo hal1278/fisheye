@@ -45,7 +45,11 @@ def run_session(config: AppConfig, config_path: Path) -> Path:
     started = datetime.now()
     session_dir = config.session.output_dir / started.strftime("%Y%m%d_%H%M%S")
     session_dir.mkdir(parents=True, exist_ok=False)
-    metadata_path = session_dir / "session.json"
+    capture_dir = session_dir / "capture"
+    processing_dir = session_dir / "processing"
+    capture_dir.mkdir()
+    processing_dir.mkdir()
+    metadata_path = capture_dir / "session.json"
 
     metadata: dict = {
         "schema_version": 1,
@@ -64,8 +68,8 @@ def run_session(config: AppConfig, config_path: Path) -> Path:
     )
     _write_json(metadata_path, metadata)
 
-    gnss = GnssLogger(config.gnss, session_dir)
-    camera = CameraRecorder(config.camera, session_dir)
+    gnss = GnssLogger(config.gnss, capture_dir)
+    camera = CameraRecorder(config.camera, capture_dir)
     camera_exit: int | None = None
     failure: BaseException | None = None
 

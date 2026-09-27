@@ -96,27 +96,37 @@ The actual receiver configuration, not only the desired TOML values, is recorded
 
 ## Session output
 
-A session directory contains:
+A session directory separates acquisition output from later derived data:
 
 ```text
 <session>/
-├── video_000.mkv
-├── video_001.mkv
-├── ...
-├── gnss.ubx
-├── gnss.csv
-├── camera.csv
-├── ffmpeg.log
-└── session.json
+├── capture/
+│   ├── video_000.mkv
+│   ├── video_001.mkv
+│   ├── ...
+│   ├── gnss.ubx
+│   ├── gnss.csv
+│   ├── camera.csv
+│   ├── ffmpeg.log
+│   └── session.json
+└── processing/
+    └── <processing-time>/
+        └── ...
 ```
 
-The names are source-oriented:
+The session directory name is the acquisition start time. `capture/` contains the
+primary acquisition record and should be treated as read-only by post-processing.
+`processing/` is reserved for derived output; each post-processing execution writes
+to a directory named by its processing start time. Existing output directories are
+errors rather than overwrite targets.
+
+The capture names are source-oriented:
 
 - `gnss.*`: data derived from or received from the GNSS receiver;
 - `camera.csv`: coarse anchors for the camera/video time axis;
 - `video_*.mkv`: primary camera data;
 - `ffmpeg.log`: FFmpeg diagnostic output;
-- `session.json`: non-epoch session metadata.
+- `session.json`: non-epoch acquisition metadata.
 
 ## Video data and PTS
 
