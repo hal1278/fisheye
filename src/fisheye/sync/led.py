@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import bisect
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+import os
 import subprocess
 import tempfile
 from typing import TYPE_CHECKING
@@ -41,6 +43,7 @@ class LedExtraction:
     samples: list[LedSample]
     skipped_frame_indices: list[int]
     decoder_messages: list[tuple[str, str]]
+    workers: int
 
 
 def _reference_by_avtime(
@@ -106,6 +109,8 @@ def _segment_scores(
         "-loglevel",
         "warning",
         "-copyts",
+        "-threads",
+        "1",
         "-i",
         str(segment.path),
         "-map",
@@ -203,11 +208,23 @@ def _segment_scores(
     return samples, missing, stderr
 
 
+def _resolve_workers(requested: int | None, task_count: int) -> int:
+    if task_count <= 1:
+        return 1
+    if requested is not None:
+        if requested <= 0:
+            raise ValueError("LED extraction worker count must be positive")
+        return min(requested, task_count)
+    cpu_count = os.cpu_count() or 1
+    return min(task_count, cpu_count, 4)
+
+
 def extract_scores(
     video: "VirtualVideo",
     ffmpeg: str,
     roi: tuple[int, int, int, int],
     sync_start: float,
+    workers: int | None = None,
 ) -> LedExtraction:
     x, y, width, height = roi
     if x + width > video.width or y + height > video.height:
@@ -216,33 +233,63 @@ def extract_scores(
         )
 
     first_time = video.first_time
-    samples: list[LedSample] = []
-    skipped: list[int] = []
-    decoder_messages: list[tuple[str, str]] = []
-
+    tasks: list[tuple["SegmentInfo", tuple["FrameRef", ...]]] = []
     for segment in video.segments:
         refs = video.frames[
             segment.first_frame : segment.first_frame + segment.frame_count
         ]
         if float(refs[-1].time - first_time) < sync_start:
             continue
+        tasks.append((segment, refs))
 
-        segment_samples, segment_missing, stderr = _segment_scores(
-            ffmpeg, segment, roi, refs
-        )
+    if not tasks:
+        raise LedError("no source segments remain after --sync-start")
+
+    worker_count = _resolve_workers(workers, len(tasks))
+    results: dict[int, tuple[list[LedSample], list[int], str]] = {}
+
+    if worker_count == 1:
+        for segment, refs in tasks:
+            results[segment.index] = _segment_scores(ffmpeg, segment, roi, refs)
+    else:
+        with ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="fisheye-led",
+        ) as executor:
+            futures = {
+                executor.submit(_segment_scores, ffmpeg, segment, roi, refs): segment.index
+                for segment, refs in tasks
+            }
+            for future in as_completed(futures):
+                segment_index = futures[future]
+                results[segment_index] = future.result()
+
+    samples: list[LedSample] = []
+    skipped: list[int] = []
+    decoder_messages: list[tuple[str, str]] = []
+
+    for segment, refs in tasks:
+        segment_samples, segment_missing, stderr = results[segment.index]
         if stderr:
             decoder_messages.append((segment.path.name, stderr))
 
-        for sample in segment_samples:
-            if sample.pts_seconds - float(first_time) >= sync_start:
-                samples.append(sample)
-        for frame_index in segment_missing:
-            if float(video.elapsed(frame_index)) >= sync_start:
-                skipped.append(frame_index)
+        samples.extend(
+            sample
+            for sample in segment_samples
+            if sample.pts_seconds - float(first_time) >= sync_start
+        )
+        skipped.extend(
+            frame_index
+            for frame_index in segment_missing
+            if float(video.elapsed(frame_index)) >= sync_start
+        )
 
     if not samples:
         raise LedError("no decodable frames remain after --sync-start")
-    return LedExtraction(samples, skipped, decoder_messages)
+
+    samples.sort(key=lambda sample: sample.frame_index)
+    skipped.sort()
+    return LedExtraction(samples, skipped, decoder_messages, worker_count)
 
 
 def otsu_threshold(scores: np.ndarray) -> float:
