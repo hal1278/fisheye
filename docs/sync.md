@@ -7,7 +7,7 @@ Sync analyzes a capture and selected LED ROI to produce a validated mapping from
 User-facing command:
 
 ```text
-fisheye sync CAPTURE --sync-start HH:MM:SS --roi X,Y,W,H
+fisheye sync CAPTURE --sync-start HH:MM:SS --roi X,Y,W,H [--workers N]
 ```
 
 Sync does not generate the final shareable video. Export is a separate stage that consumes the synchronization solution.
@@ -91,7 +91,9 @@ There is no output-video cut option in Sync; that belongs to Export.
 
 ## LED measurement
 
-Build the source packet/PTS index with the shared media layer. For LED extraction, run FFmpeg sequentially over each source segment, decode the MJPEG stream, crop the fixed ROI before RGB conversion, set a microsecond filter time base, and carry the ROI frames through a NUT pipe as uncompressed RGB with their PTS. PyAV demuxes that timestamped ROI stream. Each decoded ROI frame is matched back to the indexed source PTS rather than being associated by ordinal frame number. A malformed MJPEG packet may therefore be recorded as an undecodable source-frame index without shifting the PTS association of every subsequent LED sample.
+Build the source packet/PTS index with the shared media layer. For LED extraction, run independent FFmpeg decoders for source segments in parallel, decode the MJPEG stream, crop the fixed ROI before RGB conversion, set a microsecond filter time base, and carry the ROI frames through a NUT pipe as uncompressed RGB with their PTS. PyAV demuxes that timestamped ROI stream. Each decoded ROI frame is matched back to the indexed source PTS rather than being associated by ordinal frame number. A malformed MJPEG packet may therefore be recorded as an undecodable source-frame index without shifting the PTS association of every subsequent LED sample.
+
+By default Sync uses up to four segment workers, capped by the number of usable segments and available CPUs. `--workers N` overrides that count. Each FFmpeg process is limited to one decoder thread so that process-level segment parallelism does not multiply FFmpeg's internal thread count uncontrollably. Segment results are merged deterministically by source order before LED edge detection.
 
 The NUT layer is used only to preserve timestamps across the pipe; it does not add image compression. For a 32 x 31 RGB ROI the payload is only 2976 bytes per decoded frame, so the extra pipe/mux/demux overhead is small compared with MJPEG decoding, while avoiding transfer or RGB conversion of the full 960 x 720 frame in Python.
 
