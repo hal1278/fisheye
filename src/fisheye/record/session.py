@@ -8,7 +8,7 @@ import platform
 import subprocess
 import time
 
-from . import __version__
+from .. import __version__
 from .camera import CameraRecorder
 from .config import AppConfig
 from .gnss import GnssLogger
@@ -57,7 +57,7 @@ def run_session(config: AppConfig, config_path: Path) -> Path:
         "started_utc": _utc_now(),
         "config_path": str(config_path.resolve()),
         "software": {
-            "fisheye_logging_version": __version__,
+            "fisheye_version": __version__,
             "python": platform.python_version(),
             "platform": platform.platform(),
         },
