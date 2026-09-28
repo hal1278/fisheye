@@ -43,6 +43,16 @@ uv run fisheye roi
 
 Select `recordings/<session>/capture/` in the directory chooser. The selected ROI is copied as `--roi X,Y,W,H`.
 
-`sync` and `export` are the next implementation stages.
+## Sync
+
+```text
+uv run fisheye sync recordings/<session>/capture --sync-start HH:MM:SS --roi X,Y,W,H
+```
+
+## Export
+
+```text
+uv run fisheye export recordings/<session>/processing/<sync-run> --start HH:MM:SS
+```
 
 See `docs/design.md` and the stage-specific documents under `docs/` for the current design.
