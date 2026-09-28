@@ -151,7 +151,12 @@ def _write_json(path: Path, data: dict) -> None:
     temp.replace(path)
 
 
-def run(capture: Path, sync_start: str, roi: str) -> Path:
+def run(
+    capture: Path,
+    sync_start: str,
+    roi: str,
+    workers: int | None = None,
+) -> Path:
     capture = capture.resolve()
     if not capture.is_dir():
         raise ValueError(f"capture directory not found: {capture}")
@@ -192,7 +197,15 @@ def run(capture: Path, sync_start: str, roi: str) -> Path:
         )
 
         extraction = extract_scores(
-            video, _ffmpeg(session), roi_value, start_seconds
+            video,
+            _ffmpeg(session),
+            roi_value,
+            start_seconds,
+            workers=workers,
+        )
+        LOGGER.info(
+            "LED extraction workers=%d",
+            extraction.workers,
         )
         samples = extraction.samples
         if extraction.skipped_frame_indices:
