@@ -84,6 +84,15 @@ def _parser() -> argparse.ArgumentParser:
             "e.g. 512,608,32,32. 'fisheye roi' copies this option."
         ),
     )
+    sync.add_argument(
+        "--workers",
+        type=int,
+        metavar="N",
+        help=(
+            "Parallel segment decoders for LED extraction. Default: auto, up to 4 "
+            "workers and no more than the available segments/CPUs."
+        ),
+    )
 
     export = subparsers.add_parser(
         "export",
@@ -144,7 +153,7 @@ def main() -> None:
         if args.command == "sync":
             from .sync.command import run
 
-            result = run(args.capture, args.sync_start, args.roi)
+            result = run(args.capture, args.sync_start, args.roi, args.workers)
             print(result)
             return
 
