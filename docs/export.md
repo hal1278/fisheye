@@ -84,7 +84,7 @@ Thus:
 - source frames are not duplicated or dropped;
 - variable frame cadence is preserved.
 
-Piecewise synchronization models are applied according to the regions recorded in `sync.json`.
+The current implementation accepts the global affine model emitted by Sync. Piecewise-model export will be added together with piecewise fitting if real-data residuals show that it is necessary.
 
 ## UTC overlay
 
@@ -117,7 +117,7 @@ Initial output format:
 
 The original MJPEG Matroska segments remain the analysis masters.
 
-FFmpeg is used for rendering/encoding rather than reimplementing a video encoder in Python.
+FFmpeg is used for rendering/encoding rather than reimplementing a video encoder in Python. Source segments retain their global timestamps and are temporally interleaved inside the filter graph. The retained source PTS are rebased and scaled by the fitted clock rate before `drawtext` formats the corrected frame PTS as UTC.
 
 ## `export.json`
 
@@ -142,6 +142,8 @@ An Export run is successful only if validation passes, including:
 - first output PTS is zero;
 - output duration agrees with synchronized UTC span within muxing time-base resolution;
 - generated MP4 decodes to completion;
-- representative first/middle/last timestamps agree with `sync.json` and `export.json`.
+- decoded output frame count and PTS endpoints agree with the values predicted from `sync.json` within output time-base resolution.
+
+Visual verification of the burned text on representative first/middle/last frames remains an empirical check for the first real-data export.
 
 A failed Export run remains in its own run directory for diagnostics and must not overwrite a previous successful export.
