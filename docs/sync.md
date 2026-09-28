@@ -91,7 +91,7 @@ There is no output-video cut option in Sync; that belongs to Export.
 
 ## LED measurement
 
-Decode source frames sequentially over the synchronization interval using PyAV.
+Build the source frame/PTS index with the shared media layer. For LED extraction, run FFmpeg sequentially over each source segment, crop the fixed ROI before RGB conversion, and stream only the small ROI as raw RGB frames to Python. The decoded frame count is checked against the indexed source-frame count.
 
 Use NumPy to compute a scalar LED score from the fixed ROI. The initial score is a red-excess statistic such as:
 
@@ -190,9 +190,9 @@ Do not perform independent interpolation between every pair of 1 Hz edges. Frame
 
 Use a piecewise model only if residuals show systematic drift or a step large relative to the frame observation scale.
 
-For ordinary slow drift, piecewise sections preserve UTC continuity at boundaries. A real source-PTS discontinuity may justify a discontinuous model region.
+The current initial implementation fits a global affine model and reports `piecewise_recommended` when the span of 300 s binned median residuals exceeds half the median frame interval. It does not yet generate a piecewise model automatically; that threshold and piecewise implementation remain empirical follow-up items after the first real-data run.
 
-The exact automatic threshold for switching from global to piecewise remains an empirical validation item.
+For ordinary slow drift, a future piecewise implementation should preserve UTC continuity at boundaries. A real source-PTS discontinuity may justify a discontinuous model region.
 
 ## `led_edges.csv`
 
