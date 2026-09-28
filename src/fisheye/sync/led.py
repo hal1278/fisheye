@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass
 import subprocess
+import tempfile
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 if TYPE_CHECKING:
-    from ..media.timeline import SegmentInfo, VirtualVideo
+    from ..media.timeline import FrameRef, SegmentInfo, VirtualVideo
 
 
 class LedError(RuntimeError):
@@ -34,85 +36,171 @@ class LedEdge:
     residual_ms: float | None = None
 
 
-def _read_exact(stream, size: int) -> bytes:
-    chunks: list[bytes] = []
-    remaining = size
-    while remaining:
-        chunk = stream.read(remaining)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    return b"".join(chunks)
+@dataclass(slots=True)
+class LedExtraction:
+    samples: list[LedSample]
+    skipped_frame_indices: list[int]
+    decoder_messages: list[tuple[str, str]]
+
+
+def _reference_by_avtime(
+    frame_refs: tuple["FrameRef", ...] | list["FrameRef"],
+) -> tuple[list[int], list["FrameRef"]]:
+    keys: list[int] = []
+    refs: list["FrameRef"] = []
+    for ref in frame_refs:
+        key = round(ref.time * 1_000_000)
+        if keys and key <= keys[-1]:
+            raise LedError("source frame timestamps collide at AVTB resolution")
+        keys.append(key)
+        refs.append(ref)
+    return keys, refs
+
+
+def _match_reference(
+    pts_us: int,
+    keys: list[int],
+    refs: list["FrameRef"],
+) -> "FrameRef":
+    position = bisect.bisect_left(keys, pts_us)
+    candidates: list[int] = []
+    if position < len(keys):
+        candidates.append(position)
+    if position:
+        candidates.append(position - 1)
+    if not candidates:
+        raise LedError(f"decoded ROI frame PTS {pts_us} us has no source-frame match")
+    best = min(candidates, key=lambda index: abs(keys[index] - pts_us))
+    if abs(keys[best] - pts_us) > 1:
+        raise LedError(
+            f"decoded ROI frame PTS {pts_us} us does not match source timeline "
+            f"(nearest {keys[best]} us)"
+        )
+    return refs[best]
+
+
+def _rgb_view(frame) -> np.ndarray:
+    if frame.format.name != "rgb24" or len(frame.planes) != 1:
+        raise LedError(f"unexpected ROI pixel format: {frame.format.name}")
+    plane = frame.planes[0]
+    rows = np.frombuffer(
+        plane,
+        dtype=np.uint8,
+        count=plane.line_size * plane.height,
+    ).reshape(plane.height, plane.line_size)
+    return rows[:, : frame.width * 3].reshape(frame.height, frame.width, 3)
 
 
 def _segment_scores(
     ffmpeg: str,
     segment: "SegmentInfo",
     roi: tuple[int, int, int, int],
-    frame_refs,
-) -> list[LedSample]:
+    frame_refs: tuple["FrameRef", ...] | list["FrameRef"],
+) -> tuple[list[LedSample], list[int], str]:
+    import av
+
     x, y, width, height = roi
-    frame_bytes = width * height * 3
     cmd = [
         ffmpeg,
         "-hide_banner",
         "-loglevel",
-        "error",
+        "warning",
+        "-copyts",
         "-i",
         str(segment.path),
         "-map",
         "0:v:0",
         "-vf",
-        f"crop={width}:{height}:{x}:{y},format=rgb24",
+        f"crop={width}:{height}:{x}:{y},format=rgb24,settb=AVTB",
+        "-c:v",
+        "rawvideo",
+        "-enc_time_base",
+        "filter",
         "-fps_mode",
         "passthrough",
         "-f",
-        "rawvideo",
+        "nut",
         "pipe:1",
     ]
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    assert process.stdout is not None and process.stderr is not None
-    samples: list[LedSample] = []
-    try:
-        for ref in frame_refs:
-            raw = _read_exact(process.stdout, frame_bytes)
-            if len(raw) != frame_bytes:
-                stderr = process.stderr.read().decode("utf-8", errors="replace")
-                raise LedError(
-                    f"FFmpeg ended before all frames were decoded from {segment.path.name}: "
-                    f"expected frame {ref.local_index}; {stderr.strip()}"
-                )
-            rgb = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3)
-            values = (
-                rgb[..., 0].astype(np.float32)
-                - (rgb[..., 1].astype(np.float32) + rgb[..., 2].astype(np.float32)) * 0.5
-            ).reshape(-1)
-            top_count = max(1, values.size // 20)
-            top = np.partition(values, values.size - top_count)[-top_count:]
-            samples.append(
-                LedSample(
-                    frame_index=ref.index,
-                    pts_seconds=float(ref.time),
-                    score=float(top.mean()),
-                )
-            )
 
-        extra = process.stdout.read(1)
-        stderr = process.stderr.read().decode("utf-8", errors="replace")
-        returncode = process.wait()
-        if extra:
-            raise LedError(f"FFmpeg decoded more frames than indexed in {segment.path.name}")
-        if returncode != 0:
-            raise LedError(
-                f"FFmpeg ROI decode failed for {segment.path.name} with status {returncode}: "
-                f"{stderr.strip()}"
-            )
-    finally:
-        if process.poll() is None:
-            process.kill()
-            process.wait()
-    return samples
+    keys, refs = _reference_by_avtime(frame_refs)
+    seen: set[int] = set()
+    samples: list[LedSample] = []
+
+    with tempfile.TemporaryFile() as stderr_file:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=stderr_file,
+        )
+        assert process.stdout is not None
+        failure: BaseException | None = None
+        try:
+            try:
+                with av.open(process.stdout, mode="r", format="nut") as container:
+                    if not container.streams.video:
+                        raise LedError(
+                            f"NUT ROI stream has no video stream for {segment.path.name}"
+                        )
+                    for frame in container.decode(video=0):
+                        if frame.pts is None or frame.time_base is None:
+                            raise LedError(
+                                f"decoded ROI frame has no timestamp in {segment.path.name}"
+                            )
+                        pts_us = round(frame.pts * frame.time_base * 1_000_000)
+                        ref = _match_reference(pts_us, keys, refs)
+                        if ref.index in seen:
+                            raise LedError(
+                                f"duplicate decoded ROI timestamp at source frame {ref.index}"
+                            )
+                        seen.add(ref.index)
+
+                        rgb = _rgb_view(frame)
+                        values = (
+                            rgb[..., 0].astype(np.float32)
+                            - (
+                                rgb[..., 1].astype(np.float32)
+                                + rgb[..., 2].astype(np.float32)
+                            )
+                            * 0.5
+                        ).reshape(-1)
+                        top_count = max(1, values.size // 20)
+                        top = np.partition(values, values.size - top_count)[-top_count:]
+                        samples.append(
+                            LedSample(
+                                frame_index=ref.index,
+                                pts_seconds=float(ref.time),
+                                score=float(top.mean()),
+                            )
+                        )
+            except BaseException as exc:
+                failure = exc
+            finally:
+                process.stdout.close()
+
+            returncode = process.wait()
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            stderr_file.seek(0)
+            stderr = stderr_file.read().decode("utf-8", errors="replace").strip()
+
+    if failure is not None:
+        if isinstance(failure, LedError):
+            raise failure
+        raise LedError(
+            f"failed to read timestamped ROI stream from {segment.path.name}: {failure}; "
+            f"{stderr}"
+        ) from failure
+    if returncode != 0:
+        raise LedError(
+            f"FFmpeg ROI decode failed for {segment.path.name} with status {returncode}: "
+            f"{stderr}"
+        )
+
+    missing = [ref.index for ref in refs if ref.index not in seen]
+    return samples, missing, stderr
 
 
 def extract_scores(
@@ -120,7 +208,7 @@ def extract_scores(
     ffmpeg: str,
     roi: tuple[int, int, int, int],
     sync_start: float,
-) -> list[LedSample]:
+) -> LedExtraction:
     x, y, width, height = roi
     if x + width > video.width or y + height > video.height:
         raise LedError(
@@ -129,15 +217,32 @@ def extract_scores(
 
     first_time = video.first_time
     samples: list[LedSample] = []
+    skipped: list[int] = []
+    decoder_messages: list[tuple[str, str]] = []
+
     for segment in video.segments:
-        refs = video.frames[segment.first_frame : segment.first_frame + segment.frame_count]
-        segment_samples = _segment_scores(ffmpeg, segment, roi, refs)
+        refs = video.frames[
+            segment.first_frame : segment.first_frame + segment.frame_count
+        ]
+        if float(refs[-1].time - first_time) < sync_start:
+            continue
+
+        segment_samples, segment_missing, stderr = _segment_scores(
+            ffmpeg, segment, roi, refs
+        )
+        if stderr:
+            decoder_messages.append((segment.path.name, stderr))
+
         for sample in segment_samples:
             if sample.pts_seconds - float(first_time) >= sync_start:
                 samples.append(sample)
+        for frame_index in segment_missing:
+            if float(video.elapsed(frame_index)) >= sync_start:
+                skipped.append(frame_index)
+
     if not samples:
-        raise LedError("no frames remain after --sync-start")
-    return samples
+        raise LedError("no decodable frames remain after --sync-start")
+    return LedExtraction(samples, skipped, decoder_messages)
 
 
 def otsu_threshold(scores: np.ndarray) -> float:
