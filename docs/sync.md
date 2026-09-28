@@ -91,7 +91,9 @@ There is no output-video cut option in Sync; that belongs to Export.
 
 ## LED measurement
 
-Build the source frame/PTS index with the shared media layer. For LED extraction, run FFmpeg sequentially over each source segment, crop the fixed ROI before RGB conversion, and stream only the small ROI as raw RGB frames to Python. The decoded frame count is checked against the indexed source-frame count.
+Build the source packet/PTS index with the shared media layer. For LED extraction, run FFmpeg sequentially over each source segment, decode the MJPEG stream, crop the fixed ROI before RGB conversion, set a microsecond filter time base, and carry the ROI frames through a NUT pipe as uncompressed RGB with their PTS. PyAV demuxes that timestamped ROI stream. Each decoded ROI frame is matched back to the indexed source PTS rather than being associated by ordinal frame number. A malformed MJPEG packet may therefore be recorded as an undecodable source-frame index without shifting the PTS association of every subsequent LED sample.
+
+The NUT layer is used only to preserve timestamps across the pipe; it does not add image compression. For a 32 x 31 RGB ROI the payload is only 2976 bytes per decoded frame, so the extra pipe/mux/demux overhead is small compared with MJPEG decoding, while avoiding transfer or RGB conversion of the full 960 x 720 frame in Python.
 
 Use NumPy to compute a scalar LED score from the fixed ROI. The initial score is a red-excess statistic such as:
 
