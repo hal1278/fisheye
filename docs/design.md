@@ -1,6 +1,6 @@
 # Fisheye workflow design
 
-Status: agreed design as of 2026-09-28. Implementation may still lag behind this document.
+Status: agreed design as of 2026-09-28.
 
 ## Scope and terminology
 
@@ -24,7 +24,7 @@ fisheye sync
 fisheye export
 ```
 
-No compatibility aliases are planned.
+No compatibility aliases are provided.
 
 Detailed stage documents:
 
@@ -35,11 +35,9 @@ Detailed stage documents:
 
 ## Repository, distribution, and package naming
 
-The repository should be renamed from `fisheye-logging` to `fisheye`.
+The repository, Python project/distribution, import package, and CLI command are all named `fisheye`.
 
-The Python project/distribution and import package should also be renamed to `fisheye` when the code is refactored, unless an external packaging constraint is discovered. The command name is `fisheye`.
-
-The source tree should therefore converge on:
+The source tree is organized as:
 
 ```text
 src/
@@ -58,14 +56,16 @@ The exact internal module split may change as implementation proceeds. The stabl
 
 Keep one repository and one Python distribution.
 
-A representative source layout is:
+Current implementation follows this structure:
 
 ```text
 src/
 └── fisheye/
     ├── cli.py
+    ├── timeutil.py
     ├── record/
     │   ├── camera.py
+    │   ├── command.py
     │   ├── config.py
     │   ├── gnss.py
     │   └── session.py
@@ -73,13 +73,14 @@ src/
     │   ├── timeline.py
     │   └── decode.py
     ├── roi/
-    │   └── gui.py
+    │   ├── gui.py
+    │   └── state.py
     ├── sync/
+    │   ├── command.py
     │   ├── led.py
-    │   ├── epochs.py
     │   └── model.py
     └── export/
-        └── video.py
+        └── command.py
 ```
 
 `media/` owns common media primitives used by ROI, Sync, and Export, including segment discovery, source PTS handling, virtual frame indexing, seeking, and decoding.
@@ -147,19 +148,21 @@ Export
           processing/<time>/export/<time>/export.json
 ```
 
-This is a real artifact boundary: Export does not need to rerun LED detection or GNSS epoch association.
+This is a real artifact boundary: Export does not rerun LED detection or GNSS epoch association.
 
 ## Dependencies
 
-FFmpeg remains an external executable for live camera capture and final rendering/encoding.
+FFmpeg remains an external executable for live camera capture, high-throughput ROI extraction during Sync, and final rendering/encoding.
 
 Use:
 
 - `pyserial` and `pyubx2` for GNSS recording;
-- `av` (PyAV) for offline demuxing, seeking, decoding, frame PTS, and stream time bases;
+- `av` (PyAV) for offline demuxing, seeking, frame PTS/time-base access, ROI frame display, and output validation;
 - `numpy` for LED image statistics and synchronization calculations;
 - `Pillow` for ROI GUI image scaling and Tk image conversion;
 - `tkinter` / `ttk` for the ROI GUI.
+
+For Sync, FFmpeg crops the small ROI and streams RGB frames to Python. This avoids converting complete 960x720 frames to NumPy arrays solely to inspect a small LED region.
 
 `tkinter` is provided by the Python/runtime environment rather than as a normal PyPI dependency.
 
