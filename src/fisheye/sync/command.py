@@ -191,7 +191,18 @@ def run(capture: Path, sync_start: str, roi: str) -> Path:
             frame_interval,
         )
 
-        samples = extract_scores(video, _ffmpeg(session), roi_value, start_seconds)
+        extraction = extract_scores(
+            video, _ffmpeg(session), roi_value, start_seconds
+        )
+        samples = extraction.samples
+        if extraction.skipped_frame_indices:
+            LOGGER.warning(
+                "%d indexed source frames could not be decoded in the synchronization interval",
+                len(extraction.skipped_frame_indices),
+            )
+        for segment_name, message in extraction.decoder_messages:
+            LOGGER.warning("decoder messages for %s:\n%s", segment_name, message)
+
         threshold, on_fraction, edges = detect_rising_edges(samples)
         _write_edges(run_dir / "led_edges.csv", edges)
         LOGGER.info(
@@ -227,6 +238,8 @@ def run(capture: Path, sync_start: str, roi: str) -> Path:
                 "codec": video.codec,
                 "nominal_fps": video.nominal_fps,
                 "median_frame_interval_s": frame_interval,
+                "undecodable_frame_count": len(extraction.skipped_frame_indices),
+                "undecodable_frame_indices": extraction.skipped_frame_indices,
             },
             "sync_start_s": start_seconds,
             "roi": {"x": x, "y": y, "width": roi_width, "height": roi_height},
