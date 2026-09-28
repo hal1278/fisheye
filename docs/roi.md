@@ -1,8 +1,8 @@
-# ROI Selection stage
+# ROI stage
 
 ## Purpose
 
-ROI Selection is a small interactive tool for selecting the fixed image region containing the TIMEPULSE LED/fiber spot.
+ROI is an interactive tool for selecting the fixed image region containing the TIMEPULSE LED/fiber spot.
 
 User-facing command:
 
@@ -40,17 +40,17 @@ The initial frame viewport size equals the source frame size. Controls are place
 
 The window is resizable, but the frame viewport always preserves the source aspect ratio. The image must not be stretched.
 
-Do not add letterboxing/pillarboxing inside the frame viewport. Window geometry is constrained so that the viewport itself retains the source aspect ratio while the control area keeps its required height.
+Do not add letterboxing or pillarboxing inside the frame viewport. Window geometry is constrained so the viewport itself retains the source aspect ratio while the control area keeps its required height.
 
 The frame viewport has no padding, border, caption, or other unused margin.
 
 Apart from the controls specified below, do not add explanatory labels, headings, captions, status bars, or decorative text.
 
-Closing the title-bar X terminates any decode worker/subprocess and exits.
+Closing the title-bar X terminates decode work and exits.
 
 ## Virtual frame sequence
 
-All `video_*.mkv` segments are ordered by their numeric suffix and exposed as a single zero-based frame sequence:
+All `video_*.mkv` segments are ordered by numeric suffix and exposed as one zero-based frame sequence:
 
 ```text
 0 ... N-1
@@ -60,14 +60,12 @@ Segment boundaries are not exposed as a normal UI concept.
 
 The source PTS of every frame is authoritative for elapsed-time display. Do not compute time as `frame / nominal_fps`.
 
-A shared media layer should provide:
+A shared media layer provides:
 
 - segment discovery;
 - virtual frame indexing;
 - PTS/time-base access;
 - seek/decode by virtual frame.
-
-For the current MJPEG capture, packet/frame indexing may use the intra-frame nature of the stream, but decoded-frame PTS remains the final identity check after a seek.
 
 ## Media implementation
 
@@ -123,7 +121,7 @@ Frame increments are:
 
 Targets are clamped to `0 ... N-1`. Directional buttons are disabled only when already at the corresponding end.
 
-The configured nominal frame rate is used only to define these convenience jump distances, not as a timing source.
+The configured nominal frame rate is used only for convenience jump distances, not as a timing source.
 
 ## ROI coordinates
 
@@ -146,7 +144,7 @@ Copy
 
 in that order.
 
-ROI semantics match a normal image crop:
+ROI semantics:
 
 - `X`, `Y`: upper-left source-pixel coordinate;
 - `W`, `H`: width and height in source pixels.
@@ -206,11 +204,13 @@ When W/H changes, preserve the current ROI center as closely as possible and cla
 
 ## Copy
 
-When XY is locked, `Copy` places exactly the following form on the clipboard:
+When XY is locked, `Copy` places exactly:
 
 ```text
 --roi X,Y,W,H
 ```
+
+on the clipboard.
 
 Example:
 
@@ -218,7 +218,7 @@ Example:
 --roi 512,608,32,32
 ```
 
-Do not add quotes, explanatory text, or newline-dependent formatting. The button caption remains `Copy` after activation.
+Do not add quotes, explanatory text, or newline-dependent formatting. The button caption remains `Copy`.
 
 ## Error handling
 
