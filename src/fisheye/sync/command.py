@@ -13,7 +13,7 @@ import numpy as np
 from .. import __version__
 from ..media.timeline import build_virtual_video
 from ..timeutil import parse_elapsed, parse_roi
-from .led import detect_rising_edges, extract_scores
+from .led import detect_reference_edges, extract_scores
 from .model import assign_utc_epochs, fit_affine, logical_pulse_indices
 
 
@@ -40,6 +40,24 @@ def _ffmpeg(session: dict) -> str:
         return str(session["configured"]["camera"].get("ffmpeg", "ffmpeg"))
     except (KeyError, AttributeError):
         return "ffmpeg"
+
+
+def _timepulse(session: dict) -> tuple[float, str]:
+    try:
+        config = session["configured"]["gnss"]["timepulse"]
+        frequency_hz = float(config["frequency_hz"])
+        polarity = str(config["polarity"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "session.json does not contain a valid configured GNSS TIMEPULSE"
+        ) from exc
+    if frequency_hz <= 0:
+        raise ValueError("configured TIMEPULSE frequency must be positive")
+    if polarity not in {"rising", "falling"}:
+        raise ValueError(
+            "configured TIMEPULSE polarity must be 'rising' or 'falling'"
+        )
+    return frequency_hz, polarity
 
 
 def _parse_utc(value: str) -> float:
@@ -108,6 +126,47 @@ def _configure_log(path: Path) -> None:
     LOGGER.addHandler(stderr_handler)
 
 
+def _write_scores(path: Path, extraction, detection=None) -> None:
+    candidates = (
+        detection.candidate_sample_indices if detection is not None else set()
+    )
+    selected = (
+        detection.selected_sample_indices if detection is not None else set()
+    )
+    similarity = (
+        detection.template_similarity
+        if detection is not None
+        else np.full(len(extraction.samples), np.nan, dtype=np.float64)
+    )
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(
+            [
+                "frame_index",
+                "pts_s",
+                "delta_valid",
+                "rough_score",
+                "template_similarity",
+                "candidate",
+                "selected",
+            ]
+        )
+        for index, sample in enumerate(extraction.samples):
+            writer.writerow(
+                [
+                    sample.frame_index,
+                    f"{sample.pts_seconds:.9f}",
+                    str(sample.delta_valid).lower(),
+                    f"{sample.score:.6f}",
+                    ""
+                    if not np.isfinite(similarity[index])
+                    else f"{similarity[index]:.6f}",
+                    str(index in candidates).lower(),
+                    str(index in selected).lower(),
+                ]
+            )
+
+
 def _write_edges(path: Path, edges) -> None:
     with path.open("w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
@@ -170,6 +229,12 @@ def run(
     session = _read_session(capture)
     width, height = _frame_size(session)
     x, y, roi_width, roi_height = roi_value
+    frequency_hz, polarity = _timepulse(session)
+    if frequency_hz != 1.0:
+        raise ValueError(
+            "current GNSS UTC epoch association supports 1 Hz TIMEPULSE only"
+        )
+    expected_period = 1.0 / frequency_hz
     if x + roi_width > width or y + roi_height > height:
         raise ValueError(f"ROI {roi} exceeds configured {width}x{height} frame")
 
@@ -201,6 +266,7 @@ def run(
             _ffmpeg(session),
             roi_value,
             start_seconds,
+            polarity=polarity,
             workers=workers,
         )
         LOGGER.info(
@@ -216,13 +282,24 @@ def run(
         for segment_name, message in extraction.decoder_messages:
             LOGGER.warning("decoder messages for %s:\n%s", segment_name, message)
 
-        threshold, on_fraction, edges = detect_rising_edges(samples)
+        scores_path = run_dir / "led_scores.csv"
+        _write_scores(scores_path, extraction)
+        detection = detect_reference_edges(
+            extraction,
+            frame_interval,
+            expected_period,
+        )
+        edges = detection.edges
+        _write_scores(scores_path, extraction, detection)
         _write_edges(run_dir / "led_edges.csv", edges)
         LOGGER.info(
-            "LED threshold %.3f, ON fraction %.4f, %d rising edges",
-            threshold,
-            on_fraction,
-            len(edges),
+            "reference-edge candidates=%d selected=%d fitted_period=%.9f s "
+            "rough_threshold=%.3f onset_threshold=%.3f",
+            detection.candidate_count,
+            detection.selected_count,
+            detection.fitted_period_s,
+            detection.rough_threshold,
+            detection.onset_threshold,
         )
 
         logical = logical_pulse_indices(edges, frame_interval)
@@ -257,10 +334,18 @@ def run(
             "sync_start_s": start_seconds,
             "roi": {"x": x, "y": y, "width": roi_width, "height": roi_height},
             "led": {
-                "method": "top-5%-mean red excess; Otsu threshold",
-                "threshold": threshold,
-                "on_fraction": on_fraction,
-                "detected_edges": len(edges),
+                "method": (
+                    "capture-adaptive local luma change; robust candidates; "
+                    "periodic lattice; learned spatial template"
+                ),
+                "polarity": polarity,
+                "configured_frequency_hz": frequency_hz,
+                "rough_threshold": detection.rough_threshold,
+                "onset_threshold": detection.onset_threshold,
+                "fitted_period_s": detection.fitted_period_s,
+                "candidate_events": detection.candidate_count,
+                "detected_edges": detection.selected_count,
+                "template_bins": detection.template_bins,
                 "used_edges": int(metrics["used_edges"]),
             },
             "coarse": {

@@ -103,6 +103,7 @@ recordings/
     │   └── session.json
     └── processing/
         └── YYYYMMDD_HHMMSS/
+            ├── led_scores.csv
             ├── led_edges.csv
             ├── sync.json
             ├── sync.log
@@ -137,7 +138,8 @@ ROI
 
 Sync
   input:  capture/, --roi, --sync-start
-  output: processing/<time>/led_edges.csv
+  output: processing/<time>/led_scores.csv
+          processing/<time>/led_edges.csv
           processing/<time>/sync.json
 
 Export

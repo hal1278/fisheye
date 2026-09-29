@@ -46,7 +46,7 @@ Select `recordings/<session>/capture/` in the directory chooser. The selected RO
 ## Sync
 
 ```text
-uv run fisheye sync recordings/<session>/capture --sync-start HH:MM:SS --roi X,Y,W,H
+uv run fisheye sync recordings/<session>/capture --roi X,Y,W,H
 ```
 
 ## Export

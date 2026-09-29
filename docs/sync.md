@@ -7,7 +7,7 @@ Sync analyzes a capture and selected LED ROI to produce a validated mapping from
 User-facing command:
 
 ```text
-fisheye sync CAPTURE --sync-start HH:MM:SS --roi X,Y,W,H [--workers N]
+fisheye sync CAPTURE --roi X,Y,W,H [--sync-start HH:MM:SS] [--workers N]
 ```
 
 Sync does not generate the final shareable video. Export is a separate stage that consumes the synchronization solution.
@@ -21,7 +21,7 @@ Normal processing uses:
 - `camera.csv` — coarse video/GNSS association;
 - `session.json` — session and TIMEPULSE configuration validation;
 - `--roi` — fixed LED ROI selected by the ROI stage;
-- `--sync-start` — beginning of the interval after LED/fiber position adjustment.
+- `--sync-start` — optional beginning of the usable interval after LED/fiber position adjustment; default `0`.
 
 Normally not required by the algorithm:
 
@@ -53,6 +53,7 @@ Existing processing-run directories are never overwritten.
 Expected outputs:
 
 ```text
+led_scores.csv
 led_edges.csv
 sync.json
 sync.log
@@ -83,7 +84,7 @@ Timestamp gaps are recorded but are not filled with synthetic frames.
 
 ## Synchronization interval
 
-`--sync-start` marks the beginning of the interval in which the LED/fiber position is considered fixed and usable for automatic LED detection.
+`--sync-start` marks the beginning of the interval in which the LED/fiber position is considered fixed and usable for automatic LED detection. It defaults to `0`; when the ROI is fixed from the first frame, the normal invocation does not specify it.
 
 Frames before `--sync-start` are not used to estimate LED edges or the synchronization model.
 
@@ -97,15 +98,13 @@ By default Sync uses up to four segment workers, capped by the number of usable 
 
 The NUT layer is used only to preserve timestamps across the pipe; it does not add image compression. For a 32 x 31 RGB ROI the payload is only 2976 bytes per decoded frame, so the extra pipe/mux/demux overhead is small compared with MJPEG decoding, while avoiding transfer or RGB conversion of the full 960 x 720 frame in Python.
 
-Use NumPy to compute a scalar LED score from the fixed ROI. The initial score is a red-excess statistic such as:
+For each valid pair of consecutive decoded frames, compute a luma difference in the configured TIMEPULSE edge direction. Subtract the spatial median of that difference to suppress ROI-wide exposure changes, keep only the positive local change, and form a scalar rough score from the strongest few percent of ROI pixels.
 
-```text
-R - (G + B) / 2
-```
+The detector is capture-adaptive. It does not hard-code LED color, absolute brightness, pixel location inside the ROI, or an absolute threshold. A robust median/MAD threshold produces deliberately permissive edge candidates. Candidate events are then selected using the configured TIMEPULSE period. High-confidence periodic events learn a coarse spatial template inside the user-selected ROI; that template is used to re-score candidates and select the final periodic edge sequence.
 
-aggregated over the ROI in a way that remains sensitive to the LED spot.
+The template is learned independently for each capture. The ROI is therefore a coarse search region, not a manually specified LED shape.
 
-The threshold is derived from the observed score distribution rather than hard-coded to an absolute pixel value. A simple histogram/Otsu-style two-state threshold is sufficient initially.
+Transitions across missing/undecodable frames or abnormally large PTS gaps are invalid and cannot define an edge bracket.
 
 Configured TIMEPULSE properties provide sanity checks. For the current system:
 
@@ -116,9 +115,9 @@ Configured TIMEPULSE properties provide sanity checks. For the current system:
 
 Do not require an exact count of ON frames because the nominal frame interval is comparable to the pulse width.
 
-## Rising-edge observations
+## Reference-edge observations
 
-Represent each detected rising edge by the interval between:
+Represent each detected configured reference edge by the interval between:
 
 - the last OFF frame PTS;
 - the first ON frame PTS.
@@ -133,13 +132,13 @@ P_edge = (P_off + P_on) / 2
 
 This retains the finite-frame observation interval rather than pretending the pulse is known exactly at the first ON frame.
 
-Falling edges are used only for pulse-shape/duty sanity checks.
+The configured polarity determines whether positive or negative local luma change is used. Duty cycle is a sanity-check parameter rather than the primary detector.
 
 ## Pulse sequence
 
-Consecutive rising-edge separations determine logical pulse indices.
+The periodic candidate sequence determines logical pulse indices. False candidates are discarded and missing visible pulses are represented by skipped pulse indices.
 
-Approximately 1 s indicates adjacent pulses; approximately 2 s indicates one missed visible pulse, etc.
+The configured `frequency_hz` in `session.json` provides the expected period. The current UTC epoch-association implementation supports the recorded 1 Hz configuration; the detector itself uses the configured period rather than a hard-coded image-specific value.
 
 Allow frame-scale timing quantization when deciding which integer pulse separation is plausible. Large inconsistencies cause the edge sequence to be rejected rather than silently repaired.
 
@@ -238,3 +237,16 @@ The fitted model yields an estimated UTC frame time.
 Regression residual is not by itself an absolute timestamp uncertainty because exposure timing, rolling-shutter/readout behavior, threshold crossing, and other systematic offsets may remain.
 
 Sync therefore records residual statistics but does not claim a `±X ms` absolute uncertainty until those systematic effects have been characterized.
+
+
+## `led_scores.csv`
+
+`led_scores.csv` is written immediately after ROI extraction, before periodic detection. It contains one row per decoded frame in the synchronization interval:
+
+- source frame index and PTS;
+- whether the frame-to-frame transition is valid;
+- adaptive local-change rough score;
+- learned-template similarity when detection succeeds;
+- candidate/final-selection flags.
+
+The first version of the file is therefore still available if later candidate selection or model fitting fails, avoiding repeated video decoding while tuning or diagnosing the detector.

@@ -49,10 +49,10 @@ def _parser() -> argparse.ArgumentParser:
         epilog=(
             "Example:\n"
             "  fisheye sync recordings/20260925_090648/capture "
-            "--sync-start 00:12:30 --roi 512,608,32,32\n\n"
-            "Here, --sync-start is the source-video elapsed time after LED position "
-            "adjustment, and --roi is the source-pixel rectangle copied by "
-            "'fisheye roi'."
+            "--roi 512,608,32,32\n\n"
+            "Normally only --roi is required. Use --sync-start only when an initial "
+            "interval must be excluded because the LED/fiber position was adjusted. "
+            "'fisheye roi' copies the ROI option."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -67,12 +67,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     sync.add_argument(
         "--sync-start",
-        required=True,
+        default="0",
         metavar="ELAPSED",
         help=(
             "First source-video elapsed time usable for LED detection. "
-            "Accepted forms include HH:MM:SS[.sss], MM:SS[.sss], or seconds; "
-            "e.g. 00:12:30."
+            "Default: 0. Accepted forms include HH:MM:SS[.sss], MM:SS[.sss], "
+            "or seconds."
         ),
     )
     sync.add_argument(
