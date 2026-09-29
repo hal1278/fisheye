@@ -33,7 +33,7 @@ class LedEdge:
     pts_off: float
     pts_on: float
     pts_mid: float
-    on_frames: int
+    on_frames: int = 0
     utc_epoch: int | None = None
     used: bool = True
     residual_ms: float | None = None
