@@ -94,10 +94,10 @@ Burn an estimated UTC frame timestamp into a lens-external region.
 Initial display:
 
 ```text
-UTC(est.) 2026-09-25T01:23:45.27Z
+Estimated UTC: 2026-09-25T01:23:45.27Z
 ```
 
-Two fractional digits are a display-resolution choice suitable for an approximately 15 fps source. They do not imply 10 ms accuracy.
+Two fractional digits are a display-resolution choice suitable for an approximately 15 fps source. They do not imply 10 ms accuracy. The displayed value is derived from each corrected output PTS, so source-frame PTS jitter remains visible up to the 0.01 s display resolution; it is not reconstructed from frame index and nominal frame rate.
 
 Do not burn a `±X ms` uncertainty into the video until exposure timing, rolling-shutter/readout effects, LED thresholding, and other systematic offsets have been characterized. Regression residual alone is not an absolute timestamp uncertainty.
 
@@ -113,12 +113,16 @@ Initial output format:
 - CRF 12;
 - `preset slow`;
 - passthrough/VFR frame cadence;
+- encoder time base of 1/90000 s;
+- an x264 nominal frame rate derived from the configured source nominal rate and fitted clock rate;
 - `+faststart`;
-- sufficiently fine MP4 video track timescale.
+- 90 kHz MP4 video track timescale.
 
 The original MJPEG Matroska segments remain the analysis masters.
 
 FFmpeg is used for rendering/encoding rather than reimplementing a video encoder in Python. Export opens only source segments that overlap the retained output range. For an MJPEG first input segment it also performs input seeking to approximately one second before the retained cut, while the filter graph still performs the exact PTS trim. These optimizations do not change CRF, preset, pixel format, frame cadence, or the retained-frame set. Source segments retain their global timestamps and are temporally interleaved inside the filter graph. The retained source PTS are rebased and scaled by the fitted clock rate before `drawtext` formats the corrected frame PTS as UTC.
+
+The `interleave` filter deliberately marks its output frame rate as variable/unknown. Export therefore sets a fine encoder time base independently and supplies libx264 with a nominal frame rate of `source_nominal_fps / fitted_rate`. This nominal value is encoder metadata/parameterization only: Export does not use `-r` or an `fps` filter, and `-fps_mode passthrough` keeps the corrected per-frame PTS rather than snapping frames to a constant-rate grid.
 
 ## `timestamps.csv`
 

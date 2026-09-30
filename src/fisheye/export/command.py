@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from fractions import Fraction
 import csv
 import json
 from pathlib import Path
@@ -165,6 +166,28 @@ def _utc_text_precise(value: float) -> str:
     )
 
 
+def _timestamp_overlay_text(first_utc: float) -> str:
+    # Shift by half a hundredth so both the whole-second and fractional
+    # components round to the displayed 0.01 s resolution.
+    rounded_origin = first_utc + 0.005
+    utc_format = "%Y-%m-%dT%H\\:%M\\:%S"
+    hundredths = (
+        f"%{{eif:mod(floor((t+{rounded_origin:.9f})*100),100):d:2}}"
+    )
+    return (
+        f"Estimated UTC: %{{pts:gmtime:{rounded_origin:.9f}:{utc_format}}}."
+        f"{hundredths}Z\n"
+    )
+
+
+def _output_nominal_fps(nominal_fps: float, rate: float) -> Fraction:
+    if nominal_fps <= 0 or rate <= 0:
+        raise ExportError("nominal frame rate and synchronization rate must be positive")
+    return (
+        Fraction(str(nominal_fps)) / Fraction(str(rate))
+    ).limit_denominator(1_000_000)
+
+
 def _input_segments(video, cut_index: int, last_index: int):
     first_segment = video.frames[cut_index].segment_index
     last_segment = video.frames[last_index].segment_index
@@ -318,6 +341,8 @@ def run(processing: Path, start: str) -> Path:
     last_pts = float(video.frames[last_index].time)
     last_utc = _model_utc(model, last_pts)
     expected_last_pts = last_utc - first_utc
+    rate = float(model["rate"])
+    nominal_output_fps = _output_nominal_fps(video.nominal_fps, rate)
 
     run_dir = _run_dir(processing)
     timestamp_file = run_dir / ".timestamp.txt"
@@ -327,9 +352,8 @@ def run(processing: Path, start: str) -> Path:
     segments = _input_segments(video, cut_index, last_index)
     first_input_seek_s = _input_seek_seconds(video, cut_index)
 
-    utc_format = "%Y-%m-%dT%H\\:%M\\:%S.%2NZ"
     timestamp_file.write_text(
-        f"UTC(est.) %{{pts:gmtime:{first_utc:.9f}:{utc_format}}}\n",
+        _timestamp_overlay_text(first_utc),
         encoding="utf-8",
     )
 
@@ -340,12 +364,16 @@ def run(processing: Path, start: str) -> Path:
         command += ["-i", str(segment.path)]
     command += [
         "-filter_complex",
-        _filter_graph(len(segments), cut_pts, float(model["rate"])),
+        _filter_graph(len(segments), cut_pts, rate),
         "-map",
         "[vout]",
         "-an",
         "-c:v",
         "libx264",
+        "-enc_time_base:v",
+        "1:90000",
+        "-x264-params",
+        f"fps={nominal_output_fps.numerator}/{nominal_output_fps.denominator}",
         "-crf",
         "12",
         "-preset",
@@ -423,7 +451,7 @@ def run(processing: Path, start: str) -> Path:
                 "estimated_utc": True,
             },
             "overlay": {
-                "format": "UTC(est.) YYYY-MM-DDTHH:MM:SS.hhZ",
+                "format": "Estimated UTC: YYYY-MM-DDTHH:MM:SS.hhZ",
                 "x": 16,
                 "y": "h-text_h-16",
             },
@@ -432,6 +460,10 @@ def run(processing: Path, start: str) -> Path:
                 "crf": 12,
                 "preset": "slow",
                 "pixel_format": "yuv420p",
+                "encoder_time_base": "1/90000",
+                "encoder_nominal_fps": (
+                    f"{nominal_output_fps.numerator}/{nominal_output_fps.denominator}"
+                ),
                 "video_track_timescale": 90000,
                 "movflags": "+faststart",
             },

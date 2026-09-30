@@ -9,6 +9,8 @@ from fisheye.export.command import (
     _decodable_span,
     _input_seek_seconds,
     _input_segments,
+    _output_nominal_fps,
+    _timestamp_overlay_text,
     _undecodable_indices,
     _write_timestamps_csv,
 )
@@ -93,6 +95,26 @@ class ExportCommandTest(TestCase):
             height=720,
             codec="mjpeg",
             nominal_fps=15.0,
+        )
+
+    def test_timestamp_overlay_uses_corrected_pts_for_hundredths(self):
+        text = _timestamp_overlay_text(1000.123)
+        self.assertTrue(text.startswith("Estimated UTC: "))
+        self.assertNotIn("%2N", text)
+        self.assertIn(
+            "%{pts:gmtime:1000.128000000:%Y-%m-%dT%H\\:%M\\:%S}",
+            text,
+        )
+        self.assertIn(
+            "%{eif:mod(floor((t+1000.128000000)*100),100):d:2}",
+            text,
+        )
+
+    def test_output_nominal_fps_accounts_for_clock_rate(self):
+        self.assertEqual(_output_nominal_fps(15.0, 1.0), Fraction(15, 1))
+        self.assertEqual(
+            _output_nominal_fps(15.0, 1.0001),
+            Fraction(150000, 10001),
         )
 
     def test_input_segments_exclude_unneeded_prefix(self):
