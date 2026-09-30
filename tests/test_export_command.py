@@ -10,6 +10,7 @@ from fisheye.export.command import (
     _input_seek_seconds,
     _input_segments,
     _output_nominal_fps,
+    _parse_progress,
     _timestamp_overlay_text,
     _undecodable_indices,
     _write_timestamps_csv,
@@ -96,6 +97,27 @@ class ExportCommandTest(TestCase):
             codec="mjpeg",
             nominal_fps=15.0,
         )
+
+    def test_parse_progress_requires_final_end_record(self):
+        progress = _parse_progress(
+            "frame=123\n"
+            "dup_frames=0\n"
+            "drop_frames=0\n"
+            "progress=end\n"
+        )
+        self.assertEqual(progress["frame_count"], 123)
+        self.assertEqual(progress["progress"], "end")
+
+        with self.assertRaises(ExportError):
+            _parse_progress("frame=123\nprogress=continue\n")
+
+        with self.assertRaises(ExportError):
+            _parse_progress(
+                "frame=123\n"
+                "dup_frames=1\n"
+                "drop_frames=0\n"
+                "progress=end\n"
+            )
 
     def test_timestamp_overlay_uses_corrected_pts_for_hundredths(self):
         text = _timestamp_overlay_text(1000.123)

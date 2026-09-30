@@ -262,40 +262,107 @@ def _filter_graph(segment_count: int, cut_pts_seconds: float, rate: float) -> st
     )
 
 
-def _validate_output(path: Path, expected_frames: int, expected_last_pts: float) -> dict:
-    count = 0
-    first_pts: float | None = None
-    last_pts: float | None = None
-    previous: float | None = None
-    with av.open(str(path), mode="r") as container:
-        if not container.streams.video:
-            raise ExportError("output has no video stream")
-        for frame in container.decode(video=0):
-            if frame.pts is None or frame.time_base is None:
-                raise ExportError("output frame has no usable PTS")
-            current = float(frame.pts * frame.time_base)
-            if previous is not None and current <= previous:
-                raise ExportError("output PTS are not strictly increasing")
-            if first_pts is None:
-                first_pts = current
-            previous = current
-            last_pts = current
-            count += 1
-    if count != expected_frames:
-        raise ExportError(f"output frame count {count} != expected {expected_frames}")
-    if first_pts is None or last_pts is None:
-        raise ExportError("output contains no video frames")
-    if abs(first_pts) > 1 / 90000 + 1e-9:
-        raise ExportError(f"first output PTS is not zero: {first_pts:.9f} s")
-    tolerance = max(2 / 90000, 0.002)
-    if abs(last_pts - expected_last_pts) > tolerance:
+def _parse_progress(text: str) -> dict[str, int | str]:
+    block: dict[str, str] = {}
+    final: dict[str, str] | None = None
+    for raw_line in text.splitlines():
+        if "=" not in raw_line:
+            continue
+        key, value = raw_line.split("=", 1)
+        block[key] = value.strip()
+        if key == "progress":
+            if value.strip() == "end":
+                final = dict(block)
+            block.clear()
+
+    if final is None:
+        raise ExportError("FFmpeg progress did not report normal completion")
+
+    try:
+        frame_count = int(final["frame"])
+        dup_frames = int(final.get("dup_frames", "0"))
+        drop_frames = int(final.get("drop_frames", "0"))
+    except (KeyError, ValueError) as exc:
+        raise ExportError("FFmpeg progress is missing valid frame counters") from exc
+
+    if dup_frames or drop_frames:
         raise ExportError(
-            f"last output PTS {last_pts:.6f} differs from expected {expected_last_pts:.6f} s"
+            f"FFmpeg reported duplicated/dropped frames: dup={dup_frames}, drop={drop_frames}"
         )
+
     return {
-        "frame_count": count,
+        "frame_count": frame_count,
+        "dup_frames": dup_frames,
+        "drop_frames": drop_frames,
+        "progress": "end",
+    }
+
+
+def _validate_output_light(
+    path: Path,
+    expected_frames: int,
+    expected_last_pts: float,
+    output_frame_interval: float,
+    progress: dict[str, int | str],
+) -> dict:
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise ExportError("output video is missing or empty")
+
+    progress_frames = int(progress["frame_count"])
+    if progress_frames != expected_frames:
+        raise ExportError(
+            f"FFmpeg output frame count {progress_frames} != expected {expected_frames}"
+        )
+
+    try:
+        with av.open(str(path), mode="r") as container:
+            if len(container.streams.video) != 1:
+                raise ExportError(
+                    f"output has {len(container.streams.video)} video streams; expected 1"
+                )
+            stream = container.streams.video[0]
+            if stream.start_time is None or stream.time_base is None:
+                raise ExportError("output video stream has no usable start time")
+            first_pts = float(stream.start_time * stream.time_base)
+            stream_frames = int(stream.frames) if stream.frames else None
+            duration = (
+                float(stream.duration * stream.time_base)
+                if stream.duration is not None
+                else None
+            )
+    except av.error.FFmpegError as exc:
+        raise ExportError(f"cannot open generated MP4: {exc}") from exc
+
+    pts_tolerance = 1 / 90000 + 1e-9
+    if abs(first_pts) > pts_tolerance:
+        raise ExportError(f"first output PTS is not zero: {first_pts:.9f} s")
+
+    if stream_frames is not None and stream_frames != expected_frames:
+        raise ExportError(
+            f"container frame count {stream_frames} != expected {expected_frames}"
+        )
+
+    if duration is not None:
+        tail = duration - expected_last_pts
+        if tail < -max(0.002, 2 / 90000):
+            raise ExportError(
+                f"output duration {duration:.6f} ends before expected last PTS "
+                f"{expected_last_pts:.6f} s"
+            )
+        if tail > max(0.250, 2.0 * output_frame_interval):
+            raise ExportError(
+                f"output duration {duration:.6f} is inconsistent with expected "
+                f"last PTS {expected_last_pts:.6f} s"
+            )
+
+    return {
+        "mode": "lightweight",
+        "ffmpeg_frame_count": progress_frames,
+        "container_frame_count": stream_frames,
         "first_pts_s": first_pts,
-        "last_pts_s": last_pts,
+        "duration_s": duration,
+        "dup_frames": int(progress["dup_frames"]),
+        "drop_frames": int(progress["drop_frames"]),
     }
 
 
@@ -346,18 +413,45 @@ def run(processing: Path, start: str) -> Path:
 
     run_dir = _run_dir(processing)
     timestamp_file = run_dir / ".timestamp.txt"
+    timestamps_path = run_dir / "timestamps.csv"
+    timestamps_temp = run_dir / ".timestamps.csv.tmp"
     output = run_dir / "video.mp4"
     log_path = run_dir / "ffmpeg.log"
     ffmpeg = _ffmpeg(capture)
     segments = _input_segments(video, cut_index, last_index)
     first_input_seek_s = _input_seek_seconds(video, cut_index)
 
+    timestamp_rows = _write_timestamps_csv(
+        timestamps_temp,
+        video,
+        cut_index,
+        last_index,
+        undecodable,
+        model,
+        first_utc,
+    )
+    if timestamp_rows != expected_frames:
+        raise ExportError(
+            f"timestamp row count {timestamp_rows} != expected {expected_frames}"
+        )
+
     timestamp_file.write_text(
         _timestamp_overlay_text(first_utc),
         encoding="utf-8",
     )
 
-    command = [ffmpeg, "-hide_banner", "-loglevel", "info", "-nostats", "-copyts"]
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "info",
+        "-nostats",
+        "-stats_period",
+        "60",
+        "-progress",
+        "pipe:1",
+        "-copyts",
+    ]
     for input_index, segment in enumerate(segments):
         if input_index == 0 and first_input_seek_s > 0.0:
             command += ["-ss", f"{first_input_seek_s:.9f}"]
@@ -394,29 +488,27 @@ def run(processing: Path, start: str) -> Path:
             result = subprocess.run(
                 command,
                 cwd=run_dir,
-                stdout=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
                 stderr=log,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=False,
             )
         if result.returncode != 0:
             raise ExportError(f"FFmpeg export failed with status {result.returncode}")
 
-        validation = _validate_output(output, expected_frames, expected_last_pts)
-        timestamps_path = run_dir / "timestamps.csv"
-        timestamp_rows = _write_timestamps_csv(
-            timestamps_path,
-            video,
-            cut_index,
-            last_index,
-            undecodable,
-            model,
-            first_utc,
+        progress = _parse_progress(result.stdout)
+        output_frame_interval = float(sync["source"]["median_frame_interval_s"]) * rate
+        validation = _validate_output_light(
+            output,
+            expected_frames,
+            expected_last_pts,
+            output_frame_interval,
+            progress,
         )
-        if timestamp_rows != expected_frames:
-            raise ExportError(
-                f"timestamp row count {timestamp_rows} != expected {expected_frames}"
-            )
         validation["timestamp_rows"] = timestamp_rows
+        timestamps_temp.replace(timestamps_path)
         export_json = {
             "schema_version": 1,
             "status": "completed",
@@ -468,6 +560,7 @@ def run(processing: Path, start: str) -> Path:
                 "movflags": "+faststart",
             },
             "expected_frame_count": expected_frames,
+            "expected_last_pts_s": expected_last_pts,
             "validation": validation,
             "ffmpeg_command": command,
         }
@@ -476,5 +569,9 @@ def run(processing: Path, start: str) -> Path:
     finally:
         try:
             timestamp_file.unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            timestamps_temp.unlink()
         except FileNotFoundError:
             pass

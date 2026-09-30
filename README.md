@@ -11,7 +11,7 @@ fisheye sync
 fisheye export
 ```
 
-`record` acquires camera/GNSS data, `roi` selects the fixed TIMEPULSE LED region, `sync` estimates the video-PTS-to-UTC mapping, and `export` generates a synchronized shareable video.
+`record` acquires camera/GNSS data, `roi` selects the fixed TIMEPULSE LED region, `sync` estimates the video-PTS-to-UTC mapping, and `export` generates a synchronized shareable video. Optional full-decode verification of a completed export is available separately through `fisheye verify`.
 
 ## Requirements
 
@@ -53,6 +53,14 @@ uv run fisheye sync recordings/<session>/capture --roi X,Y,W,H
 
 ```text
 uv run fisheye export recordings/<session>/processing/<sync-run> --start HH:MM:SS
+```
+
+Normal export performs lightweight validation and writes `video.mp4`, `timestamps.csv`, `export.json`, and `ffmpeg.log`.
+
+For explicit full-decode verification:
+
+```text
+uv run fisheye verify recordings/<session>/processing/<sync-run>/export/<export-run>
 ```
 
 See `docs/design.md` and the stage-specific documents under `docs/` for the current design.

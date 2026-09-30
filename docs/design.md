@@ -13,7 +13,9 @@ The workflow has four user-visible stages:
 1. **Record** — acquire camera video, GNSS timing data, coarse host-clock anchors, metadata, and diagnostics.
 2. **ROI** — interactively select the fixed image region containing the TIMEPULSE LED/fiber spot.
 3. **Sync** — detect LED rising edges, associate them with GNSS TIMEPULSE epochs, estimate the source-PTS-to-UTC mapping, and validate the synchronization solution.
-4. **Export** — use a validated synchronization solution to cut, retime, timestamp, encode, and validate the shareable output video.
+4. **Export** — use a validated synchronization solution to cut, retime, timestamp, encode, and lightly validate the shareable output video.
+
+Full decode verification of a completed export is available separately through `fisheye verify`; it is not part of the normal four-stage workflow.
 
 The corresponding CLI is a single command with subcommands:
 
@@ -22,7 +24,10 @@ fisheye record
 fisheye roi
 fisheye sync
 fisheye export
+fisheye verify
 ```
+
+`verify` is an auxiliary validation command, not a fifth workflow stage. It performs optional full-decode verification of an already completed Export artifact.
 
 No compatibility aliases are provided.
 
@@ -110,8 +115,10 @@ recordings/
             └── export/
                 └── YYYYMMDD_HHMMSS/
                     ├── video.mp4
+                    ├── timestamps.csv
                     ├── export.json
-                    └── ffmpeg.log
+                    ├── ffmpeg.log
+                    └── verification.json  # only after fisheye verify
 ```
 
 `capture/` is the primary acquisition record and is read-only to later stages.
@@ -147,7 +154,12 @@ Export
           processing/<time>/sync.json
           output-range/encoding options
   output: processing/<time>/export/<time>/video.mp4
+          processing/<time>/export/<time>/timestamps.csv
           processing/<time>/export/<time>/export.json
+
+Verify
+  input:  completed Export directory
+  output: processing/<time>/export/<time>/verification.json
 ```
 
 This is a real artifact boundary: Export does not rerun LED detection or GNSS epoch association.
@@ -159,7 +171,7 @@ FFmpeg remains an external executable for live camera capture, high-throughput R
 Use:
 
 - `pyserial` and `pyubx2` for GNSS recording;
-- `av` (PyAV) for offline demuxing, seeking, frame PTS/time-base access, ROI frame display, and output validation;
+- `av` (PyAV) for offline demuxing, seeking, frame PTS/time-base access, ROI frame display, lightweight container validation, and explicit full-decode verification;
 - `numpy` for LED image statistics and synchronization calculations;
 - `Pillow` for ROI GUI image scaling and Tk image conversion;
 - `tkinter` / `ttk` for the ROI GUI.

@@ -130,6 +130,28 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
 
+    verify = subparsers.add_parser(
+        "verify",
+        help="Fully decode and verify a completed export.",
+        description=(
+            "Perform an explicit full-decode verification of an existing export "
+            "without re-encoding it."
+        ),
+        epilog=(
+            "Example:\n"
+            "  fisheye verify "
+            "recordings/20260925_090648/processing/20260928_220000/"
+            "export/20261001_010811"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    verify.add_argument(
+        "export",
+        type=Path,
+        metavar="EXPORT_DIR",
+        help="Export-run directory containing video.mp4, timestamps.csv, and export.json.",
+    )
+
     return parser
 
 
@@ -161,6 +183,13 @@ def main() -> None:
             from .export.command import run
 
             result = run(args.processing, args.start)
+            print(result)
+            return
+
+        if args.command == "verify":
+            from .export.verify import run
+
+            result = run(args.export)
             print(result)
             return
 

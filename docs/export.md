@@ -44,6 +44,14 @@ export.json
 ffmpeg.log
 ```
 
+A successful Export performs only lightweight output validation. Full frame-by-frame decoding is an explicit, separate verification step:
+
+```text
+fisheye verify PROCESSING/export/YYYYMMDD_HHMMSS
+```
+
+which writes `verification.json` in the export directory.
+
 Existing export-run directories are never overwritten.
 
 This permits multiple exports from one synchronization solution without rerunning Sync, for example with a different cut point or encoding setting.
@@ -145,21 +153,45 @@ output_frame_index,output_pts_s,source_frame_index,source_pts_s,source_elapsed_s
 - overlay format/position;
 - codec and encoding parameters;
 - FFmpeg version;
-- output frame count and duration;
+- expected output frame count and last output PTS;
+- lightweight output validation results;
 - retained input-segment range and first-input seek;
 - `timestamps.csv` provenance and row count;
 - validation result.
 
 ## Validation
 
-An Export run is successful only if validation passes, including:
+Export and full verification are deliberately separate responsibilities.
 
-- rendered frame count agrees with the retained indexed source-frame count after excluding source frames that Sync recorded as undecodable;
+A normal Export run performs lightweight validation without decoding the completed H.264 file again. It requires:
+
+- FFmpeg to exit successfully and report `progress=end`;
+- FFmpeg's encoded frame count to agree with the retained indexed source-frame count after known undecodable source frames are excluded;
+- FFmpeg to report no duplicated or dropped frames;
+- the MP4 to exist, be non-empty, and open as a container with exactly one video stream;
+- the stream start PTS to be zero;
+- container frame-count metadata, when present, to agree with the expected frame count;
+- stream duration to be consistent with the synchronized UTC span;
+- `timestamps.csv` to contain one row per expected output frame.
+
+`timestamps.csv` is generated from the source timeline and synchronization model before encoding and is published only after lightweight validation succeeds.
+
+For explicit end-to-end verification, run:
+
+```text
+fisheye verify PROCESSING/export/YYYYMMDD_HHMMSS
+```
+
+Verify fully decodes `video.mp4` and checks:
+
+- every decoded frame has a usable PTS;
 - output PTS are strictly increasing;
+- decoded frame count equals `expected_frame_count`;
 - first output PTS is zero;
-- output duration agrees with synchronized UTC span within muxing time-base resolution;
-- generated MP4 decodes to completion;
-- decoded output frame count and PTS endpoints agree with the values predicted from `sync.json` within output time-base resolution.
+- last output PTS agrees with the synchronized expected last PTS;
+- each decoded output PTS agrees with the corresponding `timestamps.csv` row within output time-base tolerance.
+
+A successful verification writes `verification.json`. Verification does not re-encode the video and may be rerun independently of Export.
 
 Visual verification of the burned text on representative first/middle/last frames remains an empirical check for the first real-data export.
 
