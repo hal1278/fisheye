@@ -94,3 +94,47 @@ class LedDetectionTest(TestCase):
         self.assertIn(30, logical)
         self.assertTrue(all(index is not None for index in logical))
         self.assertEqual(logical, sorted(logical))
+
+
+    def test_broad_background_change_does_not_beat_local_template(self):
+        rng = np.random.default_rng(8)
+        fps = 15.0
+        duration = 40
+        frame_count = round(fps * duration)
+        samples: list[LedSample] = []
+        signatures = np.zeros((frame_count, 64), dtype=np.float32)
+
+        for frame in range(frame_count):
+            t = frame / fps
+            score = max(0.0, float(rng.normal(2.0, 0.25)))
+            signature = rng.random(64).astype(np.float32) * 0.05
+            phase = (t - 0.2) % 1.0
+            if phase < 0.09:
+                score = 18.0
+                signature = np.zeros(64, dtype=np.float32)
+                signature[42] = 12.0
+                signature[43] = 6.0
+            samples.append(
+                LedSample(
+                    frame_index=frame,
+                    pts_seconds=t,
+                    score=score,
+                    delta_valid=frame > 0,
+                )
+            )
+            signatures[frame] = signature
+
+        # Inject a spatially broad, high-amplitude distractor shortly after
+        # one real pulse. Its scalar rough score is larger, but its matched
+        # response to the learned local LED template should be weaker.
+        distractor = round((20.2 + 2 / fps) * fps)
+        samples[distractor].score = 35.0
+        signatures[distractor] = np.full(64, 2.0, dtype=np.float32)
+
+        extraction = LedExtraction(samples, signatures, [], [], 1)
+        result = detect_reference_edges(extraction, 1 / fps, 1.0)
+
+        edge = next(
+            edge for edge in result.edges if edge.logical_index == 20
+        )
+        self.assertLess(abs(edge.pts_on - 20.2), 0.08)

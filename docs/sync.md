@@ -100,7 +100,7 @@ The NUT layer is used only to preserve timestamps across the pipe; it does not a
 
 For each valid pair of consecutive decoded frames, compute a luma difference in the configured TIMEPULSE edge direction. Subtract the spatial median of that difference to suppress ROI-wide exposure changes, keep only the positive local change, and form a scalar rough score from the strongest few percent of ROI pixels.
 
-The detector is capture-adaptive. It does not hard-code LED color, absolute brightness, pixel location inside the ROI, or an absolute threshold. A robust median/MAD threshold produces deliberately permissive edge candidates used only to bootstrap the pulse lattice and learn a coarse spatial template. After that bootstrap, the detector searches all valid frame transitions near each predicted pulse epoch using template similarity, local-change strength, and timing residual. A real pulse is therefore not permanently excluded just because its initial rough score fell below the bootstrap threshold.
+The detector is capture-adaptive. It does not hard-code LED color, absolute brightness, pixel location inside the ROI, or an absolute threshold. A robust median/MAD threshold produces deliberately permissive edge candidates used only to bootstrap the pulse lattice and learn a coarse spatial template. After that bootstrap, the detector searches all valid frame transitions near each predicted pulse epoch using the amplitude-preserving matched-template response, template similarity, local-change strength, and timing residual. The matched response retains spatially localized edge amplitude rather than normalizing every change map to unit mass. A real pulse is therefore not permanently excluded just because its initial rough score fell below the bootstrap threshold.
 
 The template is learned independently for each capture. The ROI is therefore a coarse search region, not a manually specified LED shape.
 
@@ -248,6 +248,7 @@ Sync therefore records residual statistics but does not claim a `±X ms` absolut
 - whether the frame-to-frame transition is valid;
 - adaptive local-change rough score;
 - learned-template similarity when detection succeeds;
+- amplitude-preserving matched-template response when detection succeeds;
 - candidate/final-selection flags.
 
 The first version of the file is therefore still available if later candidate selection or model fitting fails, avoiding repeated video decoding while tuning or diagnosing the detector.

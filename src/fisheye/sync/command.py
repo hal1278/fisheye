@@ -138,6 +138,11 @@ def _write_scores(path: Path, extraction, detection=None) -> None:
         if detection is not None
         else np.full(len(extraction.samples), np.nan, dtype=np.float64)
     )
+    matched = (
+        detection.matched_response
+        if detection is not None
+        else np.full(len(extraction.samples), np.nan, dtype=np.float64)
+    )
     with path.open("w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
         writer.writerow(
@@ -147,6 +152,7 @@ def _write_scores(path: Path, extraction, detection=None) -> None:
                 "delta_valid",
                 "rough_score",
                 "template_similarity",
+                "matched_response",
                 "candidate",
                 "selected",
             ]
@@ -161,6 +167,9 @@ def _write_scores(path: Path, extraction, detection=None) -> None:
                     ""
                     if not np.isfinite(similarity[index])
                     else f"{similarity[index]:.6f}",
+                    ""
+                    if not np.isfinite(matched[index])
+                    else f"{matched[index]:.6f}",
                     str(index in candidates).lower(),
                     str(index in selected).lower(),
                 ]
@@ -296,13 +305,15 @@ def run(
         _write_edges(run_dir / "led_edges.csv", edges)
         LOGGER.info(
             "reference-edge candidates=%d selected=%d fitted_period=%.9f s "
-            "rough_threshold=%.3f onset_threshold=%.3f template_similarity_floor=%.3f",
+            "rough_threshold=%.3f onset_threshold=%.3f "
+            "template_similarity_floor=%.3f matched_threshold=%.3f",
             detection.candidate_count,
             detection.selected_count,
             detection.fitted_period_s,
             detection.rough_threshold,
             detection.onset_threshold,
             detection.template_similarity_floor,
+            detection.matched_threshold,
         )
 
         logical = [
@@ -354,6 +365,7 @@ def run(
                 "rough_threshold": detection.rough_threshold,
                 "onset_threshold": detection.onset_threshold,
                 "template_similarity_floor": detection.template_similarity_floor,
+                "matched_threshold": detection.matched_threshold,
                 "fitted_period_s": detection.fitted_period_s,
                 "candidate_events": detection.candidate_count,
                 "detected_edges": detection.selected_count,

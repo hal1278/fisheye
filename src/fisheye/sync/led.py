@@ -54,9 +54,11 @@ class EdgeDetection:
     candidate_sample_indices: set[int]
     selected_sample_indices: set[int]
     template_similarity: np.ndarray
+    matched_response: np.ndarray
     rough_threshold: float
     onset_threshold: float
     template_similarity_floor: float
+    matched_threshold: float
     fitted_period_s: float
     candidate_count: int
     selected_count: int
@@ -71,7 +73,7 @@ class _CandidateEvent:
     signature: np.ndarray
 
 
-_SPATIAL_BINS = 4
+_SPATIAL_BINS = 8
 
 
 class _PtsMatcher:
@@ -168,15 +170,11 @@ def _spatial_signature(
     labels: np.ndarray,
     bins: int = _SPATIAL_BINS,
 ) -> np.ndarray:
-    pooled = np.bincount(
+    return np.bincount(
         labels,
         weights=signal.reshape(-1),
         minlength=bins * bins,
     ).astype(np.float32)
-    total = float(pooled.sum())
-    if total > 0.0:
-        pooled /= total
-    return pooled
 
 
 
@@ -694,12 +692,17 @@ def detect_reference_edges(
             "too few candidates available for spatial-template learning"
         )
 
-    template = np.median(
-        np.stack(
-            [events[index].signature for index in kept_chain]
-        ),
-        axis=0,
-    ).astype(np.float32)
+    template_rows = np.stack(
+        [events[index].signature for index in kept_chain]
+    ).astype(np.float32, copy=False)
+    row_sum = template_rows.sum(axis=1, keepdims=True)
+    template_rows = np.divide(
+        template_rows,
+        row_sum,
+        out=np.zeros_like(template_rows),
+        where=row_sum > 0,
+    )
+    template = np.median(template_rows, axis=0).astype(np.float32)
     total = float(template.sum())
     if total <= 0.0:
         raise LedError("reference-edge spatial template is empty")
@@ -815,6 +818,15 @@ def detect_reference_edges(
         0.0,
         12.0,
     )
+    matched_response = signatures @ template
+    valid_matched = matched_response[sample_valid]
+    if valid_matched.size < 10:
+        raise LedError(
+            "too few valid spatial-template responses for edge detection"
+        )
+    matched_threshold, _, _ = _robust_threshold(
+        valid_matched, 3.0
+    )
 
     def select_samples(
         lattice_phase: float,
@@ -852,11 +864,7 @@ def detect_reference_edges(
             indices = np.arange(lo, hi, dtype=np.int64)
             usable = (
                 sample_valid[indices]
-                & (sample_scores[indices] >= onset_threshold)
-                & (
-                    all_similarity[indices]
-                    >= template_similarity_floor
-                )
+                & (matched_response[indices] >= matched_threshold)
             )
             indices = indices[usable]
             if indices.size == 0:
@@ -865,9 +873,15 @@ def detect_reference_edges(
             residual = np.abs(
                 sample_times[indices] - predicted
             ) / search_window
+            local_response = matched_response[indices]
+            response_peak = float(local_response.max())
+            if response_peak <= 0.0:
+                continue
+            response_norm = local_response / response_peak
             quality = (
-                2.0 * all_similarity[indices]
-                + 0.08 * sample_strength_z[indices]
+                2.0 * response_norm
+                + 0.5 * all_similarity[indices]
+                + 0.02 * sample_strength_z[indices]
                 - 0.8 * residual
             )
             best = int(indices[int(np.argmax(quality))])
@@ -957,44 +971,11 @@ def detect_reference_edges(
 
     edges: list[LedEdge] = []
     selected_sample_indices: set[int] = set()
-    max_onset_span = min(
-        search_window, 2.5 * frame_interval
-    )
-    for pulse_index, peak in selected_samples:
-        predicted = phase + period * pulse_index
-        onset = peak
-        while onset > 0:
-            previous_index = onset - 1
-            previous = samples[previous_index]
-            current = samples[onset]
-            if (
-                not previous.delta_valid
-                or previous.score < onset_threshold
-                or all_similarity[previous_index]
-                < template_similarity_floor
-            ):
-                break
-            if previous.frame_index + 1 != current.frame_index:
-                break
-            if (
-                sample_times[peak] - previous.pts_seconds
-                > max_onset_span
-            ):
-                break
-            if previous_index == 0:
-                break
-            earlier = samples[previous_index - 1]
-            midpoint = (
-                earlier.pts_seconds + previous.pts_seconds
-            ) * 0.5
-            if abs(midpoint - predicted) > search_window:
-                break
-            onset = previous_index
-
-        if onset <= 0:
+    for pulse_index, on_index in selected_samples:
+        if on_index <= 0:
             continue
-        on = samples[onset]
-        off = samples[onset - 1]
+        on = samples[on_index]
+        off = samples[on_index - 1]
         if (
             not on.delta_valid
             or off.frame_index + 1 != on.frame_index
@@ -1013,7 +994,7 @@ def detect_reference_edges(
                 logical_index=pulse_index,
             )
         )
-        selected_sample_indices.add(onset)
+        selected_sample_indices.add(on_index)
 
     if len(edges) < 10:
         raise LedError(
@@ -1035,9 +1016,11 @@ def detect_reference_edges(
         candidate_sample_indices=candidate_sample_indices,
         selected_sample_indices=selected_sample_indices,
         template_similarity=all_similarity,
+        matched_response=matched_response,
         rough_threshold=rough_threshold,
         onset_threshold=onset_threshold,
         template_similarity_floor=template_similarity_floor,
+        matched_threshold=matched_threshold,
         fitted_period_s=period,
         candidate_count=len(events),
         selected_count=len(edges),
