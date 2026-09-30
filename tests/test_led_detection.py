@@ -125,11 +125,14 @@ class LedDetectionTest(TestCase):
             signatures[frame] = signature
 
         # Inject a spatially broad, high-amplitude distractor shortly after
-        # one real pulse. Its scalar rough score is larger, but its matched
-        # response to the learned local LED template should be weaker.
-        distractor = round((20.2 + 2 / fps) * fps)
+        # one real pulse. It has large energy in a template bin but a
+        # spatially inconsistent overall shape, so similarity must reject it.
+        distractor = round((20.2 + 1 / fps) * fps)
         samples[distractor].score = 35.0
-        signatures[distractor] = np.full(64, 2.0, dtype=np.float32)
+        distractor_signature = np.zeros(64, dtype=np.float32)
+        distractor_signature[42] = 40.0
+        distractor_signature[0] = 120.0
+        signatures[distractor] = distractor_signature
 
         extraction = LedExtraction(samples, signatures, [], [], 1)
         result = detect_reference_edges(extraction, 1 / fps, 1.0)

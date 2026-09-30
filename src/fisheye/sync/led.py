@@ -865,6 +865,10 @@ def detect_reference_edges(
             usable = (
                 sample_valid[indices]
                 & (matched_response[indices] >= matched_threshold)
+                & (
+                    all_similarity[indices]
+                    >= template_similarity_floor
+                )
             )
             indices = indices[usable]
             if indices.size == 0:
