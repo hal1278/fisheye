@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import csv
 import json
 from pathlib import Path
 import subprocess
@@ -8,7 +9,7 @@ import subprocess
 import av
 
 from .. import __version__
-from ..media.timeline import build_virtual_video, discover_segments
+from ..media.timeline import build_virtual_video
 from ..timeutil import parse_elapsed
 
 
@@ -158,6 +159,72 @@ def _utc_text(value: float) -> str:
     return f"{base}.{hundredths:02d}Z"
 
 
+def _utc_text_precise(value: float) -> str:
+    return datetime.fromtimestamp(value, timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+    )
+
+
+def _input_segments(video, cut_index: int, last_index: int):
+    first_segment = video.frames[cut_index].segment_index
+    last_segment = video.frames[last_index].segment_index
+    return video.segments[first_segment : last_segment + 1]
+
+
+def _input_seek_seconds(video, cut_index: int) -> float:
+    segment = video.segment_for_frame(cut_index)
+    if segment.codec != "mjpeg":
+        return 0.0
+    segment_first_pts = float(video.frames[segment.first_frame].time)
+    cut_pts = float(video.frames[cut_index].time)
+    # Keep a small preroll while avoiding decoding the long prefix of the
+    # first retained MJPEG segment. trim=start still enforces the exact cut.
+    return max(0.0, cut_pts - segment_first_pts - 1.0)
+
+
+def _write_timestamps_csv(
+    path: Path,
+    video,
+    cut_index: int,
+    last_index: int,
+    undecodable: set[int],
+    model: dict,
+    first_utc: float,
+) -> int:
+    count = 0
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(
+            [
+                "output_frame_index",
+                "output_pts_s",
+                "source_frame_index",
+                "source_pts_s",
+                "source_elapsed_s",
+                "estimated_utc",
+                "estimated_utc_epoch_s",
+            ]
+        )
+        for source_index in range(cut_index, last_index + 1):
+            if source_index in undecodable:
+                continue
+            source_pts = float(video.frames[source_index].time)
+            estimated_utc = _model_utc(model, source_pts)
+            writer.writerow(
+                [
+                    count,
+                    f"{estimated_utc - first_utc:.9f}",
+                    source_index,
+                    f"{source_pts:.9f}",
+                    f"{float(video.elapsed(source_index)):.9f}",
+                    _utc_text_precise(estimated_utc),
+                    f"{estimated_utc:.6f}",
+                ]
+            )
+            count += 1
+    return count
+
+
 def _filter_graph(segment_count: int, cut_pts_seconds: float, rate: float) -> str:
     setup = ";".join(
         f"[{index}:v]settb=AVTB[v{index}]" for index in range(segment_count)
@@ -257,7 +324,8 @@ def run(processing: Path, start: str) -> Path:
     output = run_dir / "video.mp4"
     log_path = run_dir / "ffmpeg.log"
     ffmpeg = _ffmpeg(capture)
-    segments = discover_segments(capture)
+    segments = _input_segments(video, cut_index, last_index)
+    first_input_seek_s = _input_seek_seconds(video, cut_index)
 
     utc_format = "%Y-%m-%dT%H\\:%M\\:%S.%2NZ"
     timestamp_file.write_text(
@@ -266,8 +334,10 @@ def run(processing: Path, start: str) -> Path:
     )
 
     command = [ffmpeg, "-hide_banner", "-loglevel", "info", "-copyts"]
-    for segment in segments:
-        command += ["-i", str(segment)]
+    for input_index, segment in enumerate(segments):
+        if input_index == 0 and first_input_seek_s > 0.0:
+            command += ["-ss", f"{first_input_seek_s:.9f}"]
+        command += ["-i", str(segment.path)]
     command += [
         "-filter_complex",
         _filter_graph(len(segments), cut_pts, float(model["rate"])),
@@ -304,6 +374,21 @@ def run(processing: Path, start: str) -> Path:
             raise ExportError(f"FFmpeg export failed with status {result.returncode}")
 
         validation = _validate_output(output, expected_frames, expected_last_pts)
+        timestamps_path = run_dir / "timestamps.csv"
+        timestamp_rows = _write_timestamps_csv(
+            timestamps_path,
+            video,
+            cut_index,
+            last_index,
+            undecodable,
+            model,
+            first_utc,
+        )
+        if timestamp_rows != expected_frames:
+            raise ExportError(
+                f"timestamp row count {timestamp_rows} != expected {expected_frames}"
+            )
+        validation["timestamp_rows"] = timestamp_rows
         export_json = {
             "schema_version": 1,
             "status": "completed",
@@ -326,6 +411,17 @@ def run(processing: Path, start: str) -> Path:
             "undecodable_source_frames_after_start": sum(
                 index >= cut_index for index in undecodable
             ),
+            "inputs": {
+                "first_segment_index": segments[0].index,
+                "last_segment_index": segments[-1].index,
+                "segment_count": len(segments),
+                "first_input_seek_s": first_input_seek_s,
+            },
+            "timestamps": {
+                "path": "timestamps.csv",
+                "row_count": timestamp_rows,
+                "estimated_utc": True,
+            },
             "overlay": {
                 "format": "UTC(est.) YYYY-MM-DDTHH:MM:SS.hhZ",
                 "x": 16,

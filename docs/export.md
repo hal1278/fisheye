@@ -39,6 +39,7 @@ Expected outputs:
 
 ```text
 video.mp4
+timestamps.csv
 export.json
 ffmpeg.log
 ```
@@ -117,7 +118,17 @@ Initial output format:
 
 The original MJPEG Matroska segments remain the analysis masters.
 
-FFmpeg is used for rendering/encoding rather than reimplementing a video encoder in Python. Source segments retain their global timestamps and are temporally interleaved inside the filter graph. The retained source PTS are rebased and scaled by the fitted clock rate before `drawtext` formats the corrected frame PTS as UTC.
+FFmpeg is used for rendering/encoding rather than reimplementing a video encoder in Python. Export opens only source segments that overlap the retained output range. For an MJPEG first input segment it also performs input seeking to approximately one second before the retained cut, while the filter graph still performs the exact PTS trim. These optimizations do not change CRF, preset, pixel format, frame cadence, or the retained-frame set. Source segments retain their global timestamps and are temporally interleaved inside the filter graph. The retained source PTS are rebased and scaled by the fitted clock rate before `drawtext` formats the corrected frame PTS as UTC.
+
+## `timestamps.csv`
+
+Export also writes one row per retained output frame:
+
+```text
+output_frame_index,output_pts_s,source_frame_index,source_pts_s,source_elapsed_s,estimated_utc,estimated_utc_epoch_s
+```
+
+`output_pts_s` follows the same affine synchronization model as the rendered video. `estimated_utc` is ISO 8601 UTC text with microsecond formatting for machine-readable interchange; the extra digits are representation precision and do not imply corresponding absolute timing accuracy. Known undecodable source frames are omitted so the CSV row count matches the decoded output frame count.
 
 ## `export.json`
 
@@ -131,6 +142,8 @@ FFmpeg is used for rendering/encoding rather than reimplementing a video encoder
 - codec and encoding parameters;
 - FFmpeg version;
 - output frame count and duration;
+- retained input-segment range and first-input seek;
+- `timestamps.csv` provenance and row count;
 - validation result.
 
 ## Validation

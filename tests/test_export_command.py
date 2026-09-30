@@ -1,10 +1,18 @@
 from unittest import TestCase
 
+from fractions import Fraction
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
 from fisheye.export.command import (
     ExportError,
     _decodable_span,
+    _input_seek_seconds,
+    _input_segments,
     _undecodable_indices,
+    _write_timestamps_csv,
 )
+from fisheye.media.timeline import FrameRef, SegmentInfo, VirtualVideo
 
 
 class ExportCommandTest(TestCase):
@@ -53,3 +61,95 @@ class ExportCommandTest(TestCase):
                 requested_cut_index=3,
                 undecodable={3, 4},
             )
+
+
+    def _video_fixture(self):
+        segments = (
+            SegmentInfo(0, Path("video_000.mkv"), 0, 3, "mjpeg", 960, 720, 1, 1000),
+            SegmentInfo(1, Path("video_001.mkv"), 3, 3, "mjpeg", 960, 720, 1, 1000),
+            SegmentInfo(2, Path("video_002.mkv"), 6, 3, "mjpeg", 960, 720, 1, 1000),
+        )
+        frames = []
+        pts = [0, 100, 200, 1800000, 1800100, 1800200, 3600000, 3600100, 3600200]
+        for index, value in enumerate(pts):
+            segment = 0 if index < 3 else 1 if index < 6 else 2
+            local = index if segment == 0 else index - 3 if segment == 1 else index - 6
+            frames.append(
+                FrameRef(
+                    index=index,
+                    segment_index=segment,
+                    local_index=local,
+                    path=segments[segment].path,
+                    pts=value,
+                    time_base_num=1,
+                    time_base_den=1000,
+                )
+            )
+        return VirtualVideo(
+            capture_dir=Path("."),
+            frames=tuple(frames),
+            segments=segments,
+            width=960,
+            height=720,
+            codec="mjpeg",
+            nominal_fps=15.0,
+        )
+
+    def test_input_segments_exclude_unneeded_prefix(self):
+        video = self._video_fixture()
+        selected = _input_segments(video, 4, 8)
+        self.assertEqual([item.index for item in selected], [1, 2])
+
+    def test_input_seek_is_relative_to_first_retained_segment(self):
+        video = self._video_fixture()
+        self.assertEqual(_input_seek_seconds(video, 4), 0.0)
+
+        frame = video.frames[5]
+        shifted = list(video.frames)
+        shifted[5] = FrameRef(
+            index=frame.index,
+            segment_index=frame.segment_index,
+            local_index=frame.local_index,
+            path=frame.path,
+            pts=1802500,
+            time_base_num=1,
+            time_base_den=1000,
+        )
+        video = VirtualVideo(
+            capture_dir=video.capture_dir,
+            frames=tuple(shifted),
+            segments=video.segments,
+            width=video.width,
+            height=video.height,
+            codec=video.codec,
+            nominal_fps=video.nominal_fps,
+        )
+        self.assertAlmostEqual(_input_seek_seconds(video, 5), 1.5)
+
+    def test_timestamp_csv_omits_undecodable_source_frames(self):
+        video = self._video_fixture()
+        model = {
+            "type": "affine",
+            "utc_reference_s": 1000.0,
+            "offset_s": 0.0,
+            "rate": 1.0,
+            "pts_reference_s": 0.0,
+        }
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "timestamps.csv"
+            rows = _write_timestamps_csv(
+                path,
+                video,
+                3,
+                5,
+                {4},
+                model,
+                2800.0,
+            )
+            content = path.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(rows, 2)
+        self.assertEqual(len(content), 3)
+        self.assertIn("source_frame_index", content[0])
+        self.assertTrue(content[1].startswith("0,0.000000000,3,"))
+        self.assertTrue(content[2].startswith("1,0.200000000,5,"))
