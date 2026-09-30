@@ -33,6 +33,7 @@ class LedEdge:
     pts_on: float
     pts_mid: float
     on_frames: int = 0
+    logical_index: int | None = None
     utc_epoch: int | None = None
     used: bool = True
     residual_ms: float | None = None
@@ -55,6 +56,7 @@ class EdgeDetection:
     template_similarity: np.ndarray
     rough_threshold: float
     onset_threshold: float
+    template_similarity_floor: float
     fitted_period_s: float
     candidate_count: int
     selected_count: int
@@ -713,35 +715,38 @@ def detect_reference_edges(
         signatures, template
     )
 
-    times = np.asarray(
+    event_times = np.asarray(
         [event.time for event in events], dtype=np.float64
     )
-    strengths = np.asarray(
+    event_strengths = np.asarray(
         [event.score for event in events], dtype=np.float64
     )
-    _, strength_median, strength_scale = _robust_threshold(
-        strengths, 0.0
+    _, event_strength_median, event_strength_scale = _robust_threshold(
+        event_strengths, 0.0
     )
-    strength_z = np.clip(
-        (strengths - strength_median) / strength_scale,
+    event_strength_z = np.clip(
+        (event_strengths - event_strength_median) / event_strength_scale,
         0.0,
         12.0,
     )
 
-    first_n = int(np.floor((times[0] - phase) / period)) - 1
-    last_n = int(np.ceil((times[-1] - phase) / period)) + 1
     search_window = max(
         2.5 * frame_interval, 0.18 * expected_period
     )
 
-    selected_events: list[int] = []
-    selected_indices: list[int] = []
+    # First extend the bootstrap lattice across the capture using only rough
+    # candidates. This pass is used to estimate how much the learned template
+    # similarity varies over time; rough_threshold is not a final gate.
+    calibration_events: list[int] = []
+    calibration_indices: list[int] = []
+    first_n = int(np.floor((event_times[0] - phase) / period)) - 1
+    last_n = int(np.ceil((event_times[-1] - phase) / period)) + 1
     left = 0
     for pulse_index in range(first_n, last_n + 1):
         predicted = phase + period * pulse_index
         while (
             left < len(events)
-            and times[left] < predicted - search_window
+            and event_times[left] < predicted - search_window
         ):
             left += 1
         right = left
@@ -749,12 +754,14 @@ def detect_reference_edges(
         best_score = -np.inf
         while (
             right < len(events)
-            and times[right] <= predicted + search_window
+            and event_times[right] <= predicted + search_window
         ):
-            residual = abs(times[right] - predicted) / search_window
+            residual = (
+                abs(event_times[right] - predicted) / search_window
+            )
             value = (
                 2.0 * event_similarity[right]
-                + 0.08 * strength_z[right]
+                + 0.08 * event_strength_z[right]
                 - 0.8 * residual
             )
             if value > best_score:
@@ -762,54 +769,228 @@ def detect_reference_edges(
                 best = right
             right += 1
         if best is not None:
-            selected_events.append(best)
-            selected_indices.append(pulse_index)
+            calibration_events.append(best)
+            calibration_indices.append(pulse_index)
 
-    if len(selected_events) < 10:
+    if len(calibration_events) < 10:
         raise LedError(
-            f"too few periodic edges selected: {len(selected_events)}"
+            "too few periodic rough candidates for template calibration"
         )
 
-    n = np.asarray(selected_indices, dtype=np.float64)
-    t = np.asarray(
-        [events[index].time for index in selected_events],
+    calibration_similarity = event_similarity[
+        np.asarray(calibration_events, dtype=np.int64)
+    ]
+    similarity_median = float(np.median(calibration_similarity))
+    similarity_mad = float(
+        np.median(
+            np.abs(calibration_similarity - similarity_median)
+        )
+    )
+    if similarity_mad <= 1e-9:
+        template_similarity_floor = float(
+            np.percentile(calibration_similarity, 5)
+        )
+    else:
+        template_similarity_floor = (
+            similarity_median - 4.0 * 1.4826 * similarity_mad
+        )
+    template_similarity_floor = float(
+        np.clip(template_similarity_floor, 0.0, 1.0)
+    )
+
+    sample_times = np.asarray(
+        [sample.pts_seconds for sample in samples],
         dtype=np.float64,
     )
-    n_ref = float(np.median(n))
-    matrix = np.column_stack((np.ones_like(n), n - n_ref))
-    intercept, period = np.linalg.lstsq(
-        matrix, t, rcond=None
-    )[0]
-    phase = float(intercept - period * n_ref)
-    period = float(period)
-    del phase
+    sample_scores = np.asarray(
+        [sample.score for sample in samples],
+        dtype=np.float64,
+    )
+    sample_valid = np.asarray(
+        [sample.delta_valid for sample in samples],
+        dtype=bool,
+    )
+    sample_strength_z = np.clip(
+        (sample_scores - baseline) / scale,
+        0.0,
+        12.0,
+    )
+
+    def select_samples(
+        lattice_phase: float,
+        lattice_period: float,
+    ) -> list[tuple[int, int]]:
+        selected: list[tuple[int, int]] = []
+        first = int(
+            np.ceil(
+                (sample_times[0] - lattice_phase) / lattice_period
+            )
+        )
+        last = int(
+            np.floor(
+                (sample_times[-1] - lattice_phase) / lattice_period
+            )
+        )
+        for pulse_index in range(first, last + 1):
+            predicted = lattice_phase + lattice_period * pulse_index
+            lo = int(
+                np.searchsorted(
+                    sample_times,
+                    predicted - search_window,
+                    side="left",
+                )
+            )
+            hi = int(
+                np.searchsorted(
+                    sample_times,
+                    predicted + search_window,
+                    side="right",
+                )
+            )
+            if lo >= hi:
+                continue
+            indices = np.arange(lo, hi, dtype=np.int64)
+            usable = (
+                sample_valid[indices]
+                & (sample_scores[indices] >= onset_threshold)
+                & (
+                    all_similarity[indices]
+                    >= template_similarity_floor
+                )
+            )
+            indices = indices[usable]
+            if indices.size == 0:
+                continue
+
+            residual = np.abs(
+                sample_times[indices] - predicted
+            ) / search_window
+            quality = (
+                2.0 * all_similarity[indices]
+                + 0.08 * sample_strength_z[indices]
+                - 0.8 * residual
+            )
+            best = int(indices[int(np.argmax(quality))])
+            selected.append((pulse_index, best))
+        return selected
+
+    def refit_selected(
+        selected: list[tuple[int, int]],
+    ) -> tuple[float, float, list[tuple[int, int]]]:
+        if len(selected) < 10:
+            raise LedError(
+                f"too few periodic frame transitions selected: "
+                f"{len(selected)}"
+            )
+        pulse_indices = np.asarray(
+            [item[0] for item in selected], dtype=np.float64
+        )
+        selected_times = np.asarray(
+            [sample_times[item[1]] for item in selected],
+            dtype=np.float64,
+        )
+        n_ref = float(np.median(pulse_indices))
+        matrix = np.column_stack(
+            (
+                np.ones_like(pulse_indices),
+                pulse_indices - n_ref,
+            )
+        )
+        intercept, fitted_period = np.linalg.lstsq(
+            matrix, selected_times, rcond=None
+        )[0]
+        if abs(float(fitted_period) - expected_period) > max(
+            0.01 * expected_period, frame_interval
+        ):
+            raise LedError(
+                f"fitted pulse period {float(fitted_period):.6f} s "
+                f"is inconsistent with configured period "
+                f"{expected_period:.6f} s"
+            )
+
+        predicted = (
+            float(intercept)
+            + float(fitted_period) * (pulse_indices - n_ref)
+        )
+        residual = selected_times - predicted
+        keep = (
+            np.abs(residual - np.median(residual))
+            <= search_window
+        )
+        if int(keep.sum()) < 10:
+            raise LedError(
+                "too few periodic frame transitions remain after refit"
+            )
+
+        filtered = [
+            item
+            for item, use in zip(selected, keep)
+            if use
+        ]
+        pulse_indices = pulse_indices[keep]
+        selected_times = selected_times[keep]
+        n_ref = float(np.median(pulse_indices))
+        matrix = np.column_stack(
+            (
+                np.ones_like(pulse_indices),
+                pulse_indices - n_ref,
+            )
+        )
+        intercept, fitted_period = np.linalg.lstsq(
+            matrix, selected_times, rcond=None
+        )[0]
+        fitted_phase = float(
+            intercept - fitted_period * n_ref
+        )
+        return fitted_phase, float(fitted_period), filtered
+
+    # Search all valid frame transitions after the template has been learned.
+    # This can recover real pulses whose rough score fell below rough_threshold.
+    selected_samples = select_samples(phase, period)
+    phase, period, selected_samples = refit_selected(
+        selected_samples
+    )
+    selected_samples = select_samples(phase, period)
+    phase, period, selected_samples = refit_selected(
+        selected_samples
+    )
 
     edges: list[LedEdge] = []
     selected_sample_indices: set[int] = set()
-    for event_index in selected_events:
-        peak = events[event_index].sample_index
+    max_onset_span = min(
+        search_window, 2.5 * frame_interval
+    )
+    for pulse_index, peak in selected_samples:
+        predicted = phase + period * pulse_index
         onset = peak
         while onset > 0:
+            previous_index = onset - 1
+            previous = samples[previous_index]
             current = samples[onset]
-            previous = samples[onset - 1]
-            if not current.delta_valid:
-                break
-            if current.score < onset_threshold:
-                break
             if (
-                onset != peak
-                and current.pts_seconds - previous.pts_seconds
-                > 2.5 * frame_interval
+                not previous.delta_valid
+                or previous.score < onset_threshold
+                or all_similarity[previous_index]
+                < template_similarity_floor
             ):
                 break
             if previous.frame_index + 1 != current.frame_index:
                 break
-            onset -= 1
-        if (
-            onset < peak
-            and samples[onset].score < onset_threshold
-        ):
-            onset += 1
+            if (
+                sample_times[peak] - previous.pts_seconds
+                > max_onset_span
+            ):
+                break
+            if previous_index == 0:
+                break
+            earlier = samples[previous_index - 1]
+            midpoint = (
+                earlier.pts_seconds + previous.pts_seconds
+            ) * 0.5
+            if abs(midpoint - predicted) > search_window:
+                break
+            onset = previous_index
+
         if onset <= 0:
             continue
         on = samples[onset]
@@ -829,6 +1010,7 @@ def detect_reference_edges(
                     off.pts_seconds + on.pts_seconds
                 )
                 * 0.5,
+                logical_index=pulse_index,
             )
         )
         selected_sample_indices.add(onset)
@@ -838,6 +1020,12 @@ def detect_reference_edges(
             "too few valid reference-edge brackets after onset "
             f"refinement: {len(edges)}"
         )
+
+    first_logical = edges[0].logical_index
+    assert first_logical is not None
+    for edge in edges:
+        assert edge.logical_index is not None
+        edge.logical_index -= first_logical
 
     candidate_sample_indices = {
         event.sample_index for event in events
@@ -849,6 +1037,7 @@ def detect_reference_edges(
         template_similarity=all_similarity,
         rough_threshold=rough_threshold,
         onset_threshold=onset_threshold,
+        template_similarity_floor=template_similarity_floor,
         fitted_period_s=period,
         candidate_count=len(events),
         selected_count=len(edges),

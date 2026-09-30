@@ -100,7 +100,7 @@ The NUT layer is used only to preserve timestamps across the pipe; it does not a
 
 For each valid pair of consecutive decoded frames, compute a luma difference in the configured TIMEPULSE edge direction. Subtract the spatial median of that difference to suppress ROI-wide exposure changes, keep only the positive local change, and form a scalar rough score from the strongest few percent of ROI pixels.
 
-The detector is capture-adaptive. It does not hard-code LED color, absolute brightness, pixel location inside the ROI, or an absolute threshold. A robust median/MAD threshold produces deliberately permissive edge candidates. Candidate events are then selected using the configured TIMEPULSE period. High-confidence periodic events learn a coarse spatial template inside the user-selected ROI; that template is used to re-score candidates and select the final periodic edge sequence.
+The detector is capture-adaptive. It does not hard-code LED color, absolute brightness, pixel location inside the ROI, or an absolute threshold. A robust median/MAD threshold produces deliberately permissive edge candidates used only to bootstrap the pulse lattice and learn a coarse spatial template. After that bootstrap, the detector searches all valid frame transitions near each predicted pulse epoch using template similarity, local-change strength, and timing residual. A real pulse is therefore not permanently excluded just because its initial rough score fell below the bootstrap threshold.
 
 The template is learned independently for each capture. The ROI is therefore a coarse search region, not a manually specified LED shape.
 
@@ -136,7 +136,7 @@ The configured polarity determines whether positive or negative local luma chang
 
 ## Pulse sequence
 
-The periodic candidate sequence determines logical pulse indices. False candidates are discarded and missing visible pulses are represented by skipped pulse indices.
+The periodic detector assigns logical pulse indices directly. False candidates are discarded and missing visible pulses are represented by skipped pulse indices. Downstream UTC association preserves these detector-assigned indices rather than reconstructing them from the final edge-to-edge intervals.
 
 The configured `frequency_hz` in `session.json` provides the expected period. The current UTC epoch-association implementation supports the recorded 1 Hz configuration; the detector itself uses the configured period rather than a hard-coded image-specific value.
 
@@ -206,6 +206,7 @@ It should include enough information to reproduce and inspect each edge, includi
 - source segment/frame identity;
 - OFF/ON PTS bounds;
 - midpoint;
+- logical pulse index from the periodic detector;
 - assigned UTC TIMEPULSE epoch;
 - whether the edge was used;
 - fitted residual.

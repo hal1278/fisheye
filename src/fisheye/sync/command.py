@@ -14,7 +14,7 @@ from .. import __version__
 from ..media.timeline import build_virtual_video
 from ..timeutil import parse_elapsed, parse_roi
 from .led import detect_reference_edges, extract_scores
-from .model import assign_utc_epochs, fit_affine, logical_pulse_indices
+from .model import assign_utc_epochs, fit_affine
 
 
 LOGGER = logging.getLogger("fisheye.sync")
@@ -178,6 +178,7 @@ def _write_edges(path: Path, edges) -> None:
                 "pts_on_s",
                 "pts_mid_s",
                 "on_frames",
+                "logical_index",
                 "tp_utc",
                 "used",
                 "residual_ms",
@@ -197,6 +198,7 @@ def _write_edges(path: Path, edges) -> None:
                     f"{edge.pts_on:.9f}",
                     f"{edge.pts_mid:.9f}",
                     edge.on_frames,
+                    "" if edge.logical_index is None else edge.logical_index,
                     utc,
                     str(edge.used).lower(),
                     "" if edge.residual_ms is None else f"{edge.residual_ms:.6f}",
@@ -294,15 +296,24 @@ def run(
         _write_edges(run_dir / "led_edges.csv", edges)
         LOGGER.info(
             "reference-edge candidates=%d selected=%d fitted_period=%.9f s "
-            "rough_threshold=%.3f onset_threshold=%.3f",
+            "rough_threshold=%.3f onset_threshold=%.3f template_similarity_floor=%.3f",
             detection.candidate_count,
             detection.selected_count,
             detection.fitted_period_s,
             detection.rough_threshold,
             detection.onset_threshold,
+            detection.template_similarity_floor,
         )
 
-        logical = logical_pulse_indices(edges, frame_interval)
+        logical = [
+            edge.logical_index
+            for edge in edges
+            if edge.logical_index is not None
+        ]
+        if len(logical) != len(edges):
+            raise RuntimeError(
+                "detected reference edges are missing logical pulse indices"
+            )
         coarse_offset, coarse_mad, locked_epochs, host_model = _coarse_offset(capture)
         first_epoch, first_estimate = assign_utc_epochs(
             edges, logical, coarse_offset, coarse_mad, locked_epochs
@@ -342,6 +353,7 @@ def run(
                 "configured_frequency_hz": frequency_hz,
                 "rough_threshold": detection.rough_threshold,
                 "onset_threshold": detection.onset_threshold,
+                "template_similarity_floor": detection.template_similarity_floor,
                 "fitted_period_s": detection.fitted_period_s,
                 "candidate_events": detection.candidate_count,
                 "detected_edges": detection.selected_count,
