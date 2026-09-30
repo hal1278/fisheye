@@ -357,7 +357,7 @@ def run(processing: Path, start: str) -> Path:
         encoding="utf-8",
     )
 
-    command = [ffmpeg, "-hide_banner", "-loglevel", "info", "-copyts"]
+    command = [ffmpeg, "-hide_banner", "-loglevel", "info", "-nostats", "-copyts"]
     for input_index, segment in enumerate(segments):
         if input_index == 0 and first_input_seek_s > 0.0:
             command += ["-ss", f"{first_input_seek_s:.9f}"]
