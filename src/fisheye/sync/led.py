@@ -37,6 +37,7 @@ class LedEdge:
     utc_epoch: int | None = None
     used: bool = True
     residual_ms: float | None = None
+    interval_residual_ms: float | None = None
 
 
 @dataclass(slots=True)

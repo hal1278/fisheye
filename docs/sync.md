@@ -130,7 +130,7 @@ For fitting, use the midpoint as the initial representative observation:
 P_edge = (P_off + P_on) / 2
 ```
 
-This retains the finite-frame observation interval rather than pretending the pulse is known exactly at the first ON frame.
+This retains the finite-frame observation interval rather than pretending the pulse is known exactly at the first ON frame. Quality evaluation must also use the full OFF/ON bracket: if the fitted UTC epoch lies anywhere inside the modeled bracket, the interval residual is zero. This avoids interpreting the expected sawtooth of midpoint residuals caused by frame quantization as clock nonlinearity.
 
 The configured polarity determines whether positive or negative local luma change is used. Duty cycle is a sanity-check parameter rather than the primary detector.
 
@@ -180,20 +180,18 @@ Keep rejected edges in `led_edges.csv` with `used=false`.
 
 Start with one global affine model for the usable synchronization interval.
 
-Evaluate LED residuals versus time, including:
+Evaluate both midpoint residuals and interval-censored residuals versus time. Midpoint residuals remain useful diagnostics, but piecewise-model decisions are based on the signed distance from the assigned UTC epoch to the modeled OFF/ON interval. Record at least:
 
-- median;
-- median absolute deviation;
-- RMS;
-- absolute P95;
-- maximum;
-- binned median residual over time.
+- midpoint median, MAD, RMS, absolute P95, and maximum;
+- the fraction of used edges whose UTC epoch falls inside the modeled OFF/ON bracket;
+- interval-residual median, MAD, RMS, absolute P95, and maximum;
+- 300 s binned median spans for both midpoint and interval residuals.
 
 Do not perform independent interpolation between every pair of 1 Hz edges. Frame-scale edge-observation error would be converted directly into artificial local clock-rate changes.
 
 Use a piecewise model only if residuals show systematic drift or a step large relative to the frame observation scale.
 
-The current initial implementation fits a global affine model and reports `piecewise_recommended` when the span of 300 s binned median residuals exceeds half the median frame interval. It does not yet generate a piecewise model automatically; that threshold and piecewise implementation remain empirical follow-up items after the first real-data run.
+The current implementation fits a global affine model and reports `piecewise_recommended` when the span of 300 s binned median interval residuals exceeds half the median frame interval. Midpoint binned span is still reported, but it is not used for that decision because frame-phase quantization alone can move midpoint residuals by nearly one frame without violating the observed OFF/ON brackets. The code does not yet generate a piecewise model automatically.
 
 For ordinary slow drift, a future piecewise implementation should preserve UTC continuity at boundaries. A real source-PTS discontinuity may justify a discontinuous model region.
 
@@ -209,7 +207,8 @@ It should include enough information to reproduce and inspect each edge, includi
 - logical pulse index from the periodic detector;
 - assigned UTC TIMEPULSE epoch;
 - whether the edge was used;
-- fitted residual.
+- midpoint fitted residual;
+- interval residual, equal to zero when the fitted epoch lies inside the OFF/ON bracket.
 
 ## `sync.json`
 

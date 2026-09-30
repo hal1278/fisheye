@@ -40,3 +40,37 @@ class SyncModelTest(TestCase):
         model, metrics = fit_affine(edges, 1 / 15)
         self.assertAlmostEqual(model.rate, 1.0, places=12)
         self.assertEqual(metrics["used_edges"], len(edges))
+
+
+    def test_interval_metrics_do_not_misclassify_frame_quantization_as_drift(self):
+        frame_interval = 1 / 15
+        base_epoch = 1_790_000_000
+        edges = []
+        for i in range(1200):
+            phase = 0.1 if (i // 300) % 2 == 0 else 0.9
+            pulse_pts = 5.0 + i
+            pts_off = pulse_pts - phase * frame_interval
+            pts_on = pts_off + frame_interval
+            edge = LedEdge(
+                frame_off=i * 15,
+                frame_on=i * 15 + 1,
+                pts_off=pts_off,
+                pts_on=pts_on,
+                pts_mid=(pts_off + pts_on) * 0.5,
+                logical_index=i,
+                utc_epoch=base_epoch + i,
+            )
+            edges.append(edge)
+
+        _, metrics = fit_affine(edges, frame_interval)
+
+        self.assertGreater(
+            metrics["binned_median_span_ms"],
+            0.5 * frame_interval * 1000.0,
+        )
+        self.assertLess(
+            metrics["binned_interval_median_span_ms"],
+            0.5 * frame_interval * 1000.0,
+        )
+        self.assertFalse(metrics["piecewise_recommended"])
+        self.assertGreater(metrics["interval_covered_fraction"], 0.75)

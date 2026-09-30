@@ -191,6 +191,7 @@ def _write_edges(path: Path, edges) -> None:
                 "tp_utc",
                 "used",
                 "residual_ms",
+                "interval_residual_ms",
             ]
         )
         for edge in edges:
@@ -211,6 +212,9 @@ def _write_edges(path: Path, edges) -> None:
                     utc,
                     str(edge.used).lower(),
                     "" if edge.residual_ms is None else f"{edge.residual_ms:.6f}",
+                    ""
+                    if edge.interval_residual_ms is None
+                    else f"{edge.interval_residual_ms:.6f}",
                 ]
             )
 
@@ -396,7 +400,8 @@ def run(
         _write_json(run_dir / "sync.json", sync_json)
         if metrics["piecewise_recommended"]:
             LOGGER.warning(
-                "binned residual drift exceeds half a median frame interval; inspect sync.json before export"
+                "binned interval-residual drift exceeds half a median frame "
+                "interval; inspect sync.json before export"
             )
         LOGGER.info("synchronization completed")
         return run_dir

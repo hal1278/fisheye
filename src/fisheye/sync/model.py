@@ -104,12 +104,33 @@ def fit_affine(
         )
     offset, rate, residual = fit(mask)
 
-    for edge, keep, value in zip(candidates, mask, residual):
+    off_pts = np.asarray(
+        [edge.pts_off for edge in candidates], dtype=np.float64
+    )
+    on_pts = np.asarray(
+        [edge.pts_on for edge in candidates], dtype=np.float64
+    )
+    predicted_off = t_ref + offset + rate * (off_pts - p_ref)
+    predicted_on = t_ref + offset + rate * (on_pts - p_ref)
+    lower = np.minimum(predicted_off, predicted_on)
+    upper = np.maximum(predicted_off, predicted_on)
+    interval_residual = np.where(
+        t < lower,
+        t - lower,
+        np.where(t > upper, t - upper, 0.0),
+    )
+
+    for edge, keep, value, interval_value in zip(
+        candidates, mask, residual, interval_residual
+    ):
         edge.used = bool(keep)
         edge.residual_ms = float(value * 1000.0)
+        edge.interval_residual_ms = float(interval_value * 1000.0)
 
     used_residual = residual[mask]
     abs_used = np.abs(used_residual)
+    used_interval_residual = interval_residual[mask]
+    abs_interval = np.abs(used_interval_residual)
     metrics: dict[str, float | int | bool] = {
         "detected_edges": len(edges),
         "used_edges": int(mask.sum()),
@@ -120,13 +141,59 @@ def fit_affine(
         "residual_rms_ms": float(np.sqrt(np.mean(used_residual**2)) * 1000.0),
         "residual_p95_abs_ms": float(np.percentile(abs_used, 95) * 1000.0),
         "residual_max_abs_ms": float(abs_used.max() * 1000.0),
+        "interval_covered_edges": int(
+            np.count_nonzero(used_interval_residual == 0.0)
+        ),
+        "interval_covered_fraction": float(
+            np.mean(used_interval_residual == 0.0)
+        ),
+        "interval_residual_median_ms": float(
+            np.median(used_interval_residual) * 1000.0
+        ),
+        "interval_residual_mad_ms": float(
+            np.median(
+                np.abs(
+                    used_interval_residual
+                    - np.median(used_interval_residual)
+                )
+            )
+            * 1000.0
+        ),
+        "interval_residual_rms_ms": float(
+            np.sqrt(np.mean(used_interval_residual**2)) * 1000.0
+        ),
+        "interval_residual_p95_abs_ms": float(
+            np.percentile(abs_interval, 95) * 1000.0
+        ),
+        "interval_residual_max_abs_ms": float(
+            abs_interval.max() * 1000.0
+        ),
     }
 
     bin_ids = np.floor((p[mask] - p[mask][0]) / 300.0).astype(int)
-    medians = [float(np.median(used_residual[bin_ids == value])) for value in np.unique(bin_ids)]
-    drift = (max(medians) - min(medians)) if len(medians) >= 2 else 0.0
-    metrics["binned_median_span_ms"] = drift * 1000.0
-    metrics["piecewise_recommended"] = drift > 0.5 * frame_interval
+    midpoint_medians = [
+        float(np.median(used_residual[bin_ids == value]))
+        for value in np.unique(bin_ids)
+    ]
+    midpoint_span = (
+        max(midpoint_medians) - min(midpoint_medians)
+        if len(midpoint_medians) >= 2
+        else 0.0
+    )
+    interval_medians = [
+        float(np.median(used_interval_residual[bin_ids == value]))
+        for value in np.unique(bin_ids)
+    ]
+    interval_span = (
+        max(interval_medians) - min(interval_medians)
+        if len(interval_medians) >= 2
+        else 0.0
+    )
+    metrics["binned_median_span_ms"] = midpoint_span * 1000.0
+    metrics["binned_interval_median_span_ms"] = interval_span * 1000.0
+    metrics["piecewise_recommended"] = (
+        interval_span > 0.5 * frame_interval
+    )
 
     return (
         AffineModel(
