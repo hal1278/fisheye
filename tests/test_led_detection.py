@@ -141,3 +141,47 @@ class LedDetectionTest(TestCase):
             edge for edge in result.edges if edge.logical_index == 20
         )
         self.assertLess(abs(edge.pts_on - 20.2), 0.08)
+
+
+    def test_final_localization_uses_nearest_valid_transition(self):
+        rng = np.random.default_rng(12)
+        fps = 15.0
+        duration = 40
+        frame_count = round(fps * duration)
+        samples: list[LedSample] = []
+        signatures = np.zeros((frame_count, 64), dtype=np.float32)
+
+        for frame in range(frame_count):
+            t = frame / fps
+            score = max(0.0, float(rng.normal(2.0, 0.2)))
+            signature = rng.random(64).astype(np.float32) * 0.02
+            if (t - 0.2) % 1.0 < 0.09:
+                score = 16.0
+                signature = np.zeros(64, dtype=np.float32)
+                signature[42] = 10.0
+                signature[43] = 5.0
+            samples.append(
+                LedSample(
+                    frame_index=frame,
+                    pts_seconds=t,
+                    score=score,
+                    delta_valid=frame > 0,
+                )
+            )
+            signatures[frame] = signature
+
+        reference_frame = round(20.2 * fps)
+        later_frame = reference_frame + 1
+        samples[later_frame].score = 60.0
+        later_signature = np.zeros(64, dtype=np.float32)
+        later_signature[42] = 40.0
+        later_signature[43] = 20.0
+        signatures[later_frame] = later_signature
+
+        extraction = LedExtraction(samples, signatures, [], [], 1)
+        result = detect_reference_edges(extraction, 1 / fps, 1.0)
+        edge = next(
+            edge for edge in result.edges if edge.logical_index == 20
+        )
+
+        self.assertLess(abs(edge.pts_on - 20.2), 0.08)

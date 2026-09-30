@@ -306,7 +306,8 @@ def run(
         LOGGER.info(
             "reference-edge candidates=%d selected=%d fitted_period=%.9f s "
             "rough_threshold=%.3f onset_threshold=%.3f "
-            "template_similarity_floor=%.3f matched_threshold=%.3f",
+            "template_similarity_floor=%.3f matched_threshold=%.3f "
+            "final_timing_window=%.6f s",
             detection.candidate_count,
             detection.selected_count,
             detection.fitted_period_s,
@@ -314,6 +315,7 @@ def run(
             detection.onset_threshold,
             detection.template_similarity_floor,
             detection.matched_threshold,
+            detection.final_timing_window_s,
         )
 
         logical = [
@@ -366,6 +368,7 @@ def run(
                 "onset_threshold": detection.onset_threshold,
                 "template_similarity_floor": detection.template_similarity_floor,
                 "matched_threshold": detection.matched_threshold,
+                "final_timing_window_s": detection.final_timing_window_s,
                 "fitted_period_s": detection.fitted_period_s,
                 "candidate_events": detection.candidate_count,
                 "detected_edges": detection.selected_count,

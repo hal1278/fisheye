@@ -59,6 +59,7 @@ class EdgeDetection:
     onset_threshold: float
     template_similarity_floor: float
     matched_threshold: float
+    final_timing_window_s: float
     fitted_period_s: float
     candidate_count: int
     selected_count: int
@@ -973,6 +974,74 @@ def detect_reference_edges(
         selected_samples
     )
 
+    # The broad search above establishes a stable global lattice. Final edge
+    # localization is deliberately stricter: a true reference edge should be
+    # represented by a transition close to that lattice at frame scale.
+    # Prefer timing over response magnitude here so a stronger later change
+    # cannot pull the edge by multiple frames.
+    final_timing_window = 0.75 * frame_interval
+
+    def select_nearest_samples(
+        lattice_phase: float,
+        lattice_period: float,
+    ) -> list[tuple[int, int]]:
+        selected: list[tuple[int, int]] = []
+        first = int(
+            np.ceil(
+                (sample_times[0] - lattice_phase) / lattice_period
+            )
+        )
+        last = int(
+            np.floor(
+                (sample_times[-1] - lattice_phase) / lattice_period
+            )
+        )
+        for pulse_index in range(first, last + 1):
+            predicted = lattice_phase + lattice_period * pulse_index
+            lo = int(
+                np.searchsorted(
+                    sample_times,
+                    predicted - final_timing_window,
+                    side="left",
+                )
+            )
+            hi = int(
+                np.searchsorted(
+                    sample_times,
+                    predicted + final_timing_window,
+                    side="right",
+                )
+            )
+            if lo >= hi:
+                continue
+            indices = np.arange(lo, hi, dtype=np.int64)
+            usable = (
+                sample_valid[indices]
+                & (matched_response[indices] >= matched_threshold)
+                & (
+                    all_similarity[indices]
+                    >= template_similarity_floor
+                )
+            )
+            indices = indices[usable]
+            if indices.size == 0:
+                continue
+
+            distance = np.abs(sample_times[indices] - predicted)
+            order = np.lexsort((-matched_response[indices], distance))
+            best = int(indices[int(order[0])])
+            selected.append((pulse_index, best))
+        return selected
+
+    selected_samples = select_nearest_samples(phase, period)
+    phase, period, selected_samples = refit_selected(
+        selected_samples
+    )
+    selected_samples = select_nearest_samples(phase, period)
+    phase, period, selected_samples = refit_selected(
+        selected_samples
+    )
+
     edges: list[LedEdge] = []
     selected_sample_indices: set[int] = set()
     for pulse_index, on_index in selected_samples:
@@ -1025,6 +1094,7 @@ def detect_reference_edges(
         onset_threshold=onset_threshold,
         template_similarity_floor=template_similarity_floor,
         matched_threshold=matched_threshold,
+        final_timing_window_s=final_timing_window,
         fitted_period_s=period,
         candidate_count=len(events),
         selected_count=len(edges),
