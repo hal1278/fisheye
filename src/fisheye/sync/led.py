@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import bisect
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import os
@@ -73,40 +72,62 @@ class _CandidateEvent:
 _SPATIAL_BINS = 4
 
 
-def _reference_by_avtime(
-    frame_refs: tuple["FrameRef", ...] | list["FrameRef"],
-) -> tuple[list[int], list["FrameRef"]]:
-    keys: list[int] = []
-    refs: list["FrameRef"] = []
-    for ref in frame_refs:
-        key = round(ref.time * 1_000_000)
-        if keys and key <= keys[-1]:
-            raise LedError("source frame timestamps collide at AVTB resolution")
-        keys.append(key)
-        refs.append(ref)
-    return keys, refs
+class _PtsMatcher:
+    """Match monotonic decoded PTS to the monotonic source timeline."""
 
+    def __init__(
+        self,
+        frame_refs: tuple["FrameRef", ...] | list["FrameRef"],
+    ):
+        self._refs = frame_refs
+        self._keys = [round(ref.time * 1_000_000) for ref in frame_refs]
+        for previous, current in zip(self._keys, self._keys[1:]):
+            if current <= previous:
+                raise LedError(
+                    "source frame timestamps collide at AVTB resolution"
+                )
+        self._next = 0
+        self._last_decoded_pts: int | None = None
+        self._missing: list[int] = []
 
-def _match_reference(
-    pts_us: int,
-    keys: list[int],
-    refs: list["FrameRef"],
-) -> "FrameRef":
-    position = bisect.bisect_left(keys, pts_us)
-    candidates: list[int] = []
-    if position < len(keys):
-        candidates.append(position)
-    if position:
-        candidates.append(position - 1)
-    if not candidates:
-        raise LedError(f"decoded ROI frame PTS {pts_us} us has no source-frame match")
-    best = min(candidates, key=lambda index: abs(keys[index] - pts_us))
-    if abs(keys[best] - pts_us) > 1:
-        raise LedError(
-            f"decoded ROI frame PTS {pts_us} us does not match source timeline "
-            f"(nearest {keys[best]} us)"
-        )
-    return refs[best]
+    def match(self, pts_us: int) -> "FrameRef":
+        if (
+            self._last_decoded_pts is not None
+            and pts_us <= self._last_decoded_pts
+        ):
+            raise LedError(
+                f"decoded ROI timestamps are not increasing: "
+                f"{pts_us} <= {self._last_decoded_pts} us"
+            )
+        self._last_decoded_pts = pts_us
+
+        while (
+            self._next < len(self._keys)
+            and self._keys[self._next] < pts_us - 1
+        ):
+            self._missing.append(self._refs[self._next].index)
+            self._next += 1
+
+        if self._next >= len(self._keys):
+            raise LedError(
+                f"decoded ROI frame PTS {pts_us} us has no source-frame match"
+            )
+
+        key = self._keys[self._next]
+        if abs(key - pts_us) > 1:
+            raise LedError(
+                f"decoded ROI frame PTS {pts_us} us does not match source "
+                f"timeline (next {key} us)"
+            )
+
+        ref = self._refs[self._next]
+        self._next += 1
+        return ref
+
+    def missing_indices(self) -> list[int]:
+        return self._missing + [
+            ref.index for ref in self._refs[self._next :]
+        ]
 
 
 def _rgb_view(frame) -> np.ndarray:
@@ -130,13 +151,21 @@ def _luma(rgb: np.ndarray) -> np.ndarray:
     )
 
 
-def _spatial_signature(
-    signal: np.ndarray, bins: int = _SPATIAL_BINS
+def _spatial_labels(
+    height: int,
+    width: int,
+    bins: int = _SPATIAL_BINS,
 ) -> np.ndarray:
-    height, width = signal.shape
     yy = np.minimum(np.arange(height) * bins // height, bins - 1)
     xx = np.minimum(np.arange(width) * bins // width, bins - 1)
-    labels = (yy[:, None] * bins + xx[None, :]).reshape(-1)
+    return (yy[:, None] * bins + xx[None, :]).reshape(-1)
+
+
+def _spatial_signature(
+    signal: np.ndarray,
+    labels: np.ndarray,
+    bins: int = _SPATIAL_BINS,
+) -> np.ndarray:
     pooled = np.bincount(
         labels,
         weights=signal.reshape(-1),
@@ -184,11 +213,12 @@ def _segment_scores(
         "pipe:1",
     ]
 
-    keys, refs = _reference_by_avtime(frame_refs)
-    seen: set[int] = set()
+    refs = frame_refs
+    matcher = _PtsMatcher(refs)
     samples: list[LedSample] = []
     signatures: list[np.ndarray] = []
     sign = 1.0 if polarity == "rising" else -1.0
+    spatial_labels = _spatial_labels(height, width)
 
     source_times = np.asarray([float(ref.time) for ref in refs], dtype=np.float64)
     positive_deltas = np.diff(source_times)
@@ -222,12 +252,7 @@ def _segment_scores(
                                 f"decoded ROI frame has no timestamp in {segment.path.name}"
                             )
                         pts_us = round(frame.pts * frame.time_base * 1_000_000)
-                        ref = _match_reference(pts_us, keys, refs)
-                        if ref.index in seen:
-                            raise LedError(
-                                f"duplicate decoded ROI timestamp at source frame {ref.index}"
-                            )
-                        seen.add(ref.index)
+                        ref = matcher.match(pts_us)
 
                         current_luma = _luma(_rgb_view(frame))
                         delta_valid = False
@@ -251,7 +276,9 @@ def _segment_scores(
                                     values, values.size - top_count
                                 )[-top_count:]
                                 score = float(top.mean())
-                                signature = _spatial_signature(signal)
+                                signature = _spatial_signature(
+                                    signal, spatial_labels
+                                )
                                 delta_valid = True
 
                         samples.append(
@@ -293,7 +320,7 @@ def _segment_scores(
             f"{returncode}: {stderr}"
         )
 
-    missing = [ref.index for ref in refs if ref.index not in seen]
+    missing = matcher.missing_indices()
     signature_array = (
         np.stack(signatures).astype(np.float32, copy=False)
         if signatures
@@ -408,13 +435,12 @@ def extract_scores(
     if not samples:
         raise LedError("no decodable frames remain after --sync-start")
 
-    order = np.argsort(
-        np.fromiter(
-            (sample.frame_index for sample in samples), dtype=np.int64
-        )
-    )
-    samples = [samples[int(index)] for index in order]
-    signatures = np.concatenate(signature_blocks, axis=0)[order]
+    for previous, current in zip(samples, samples[1:]):
+        if current.frame_index <= previous.frame_index:
+            raise LedError(
+                "segment merge produced non-increasing source frame indices"
+            )
+    signatures = np.concatenate(signature_blocks, axis=0)
     skipped.sort()
     return LedExtraction(
         samples,
