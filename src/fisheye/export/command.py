@@ -16,6 +16,87 @@ class ExportError(RuntimeError):
     pass
 
 
+def _undecodable_indices(source_meta: dict, frame_count: int) -> set[int]:
+    raw = source_meta.get("undecodable_frame_indices")
+    declared = source_meta.get("undecodable_frame_count", 0)
+
+    if raw is None:
+        try:
+            declared_count = int(declared)
+        except (TypeError, ValueError) as exc:
+            raise ExportError(
+                "sync.json has an invalid undecodable-frame count"
+            ) from exc
+        if declared_count:
+            raise ExportError(
+                "sync.json records undecodable source frames without their indices"
+            )
+        return set()
+
+    if not isinstance(raw, list):
+        raise ExportError(
+            "sync.json undecodable_frame_indices must be a list"
+        )
+
+    indices: set[int] = set()
+    for value in raw:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ExportError(
+                "sync.json contains a non-integer undecodable frame index"
+            )
+        if not 0 <= value < frame_count:
+            raise ExportError(
+                f"sync.json undecodable frame index {value} is out of range"
+            )
+        if value in indices:
+            raise ExportError(
+                f"sync.json repeats undecodable frame index {value}"
+            )
+        indices.add(value)
+
+    try:
+        declared_count = int(declared)
+    except (TypeError, ValueError) as exc:
+        raise ExportError(
+            "sync.json has an invalid undecodable-frame count"
+        ) from exc
+    if declared_count != len(indices):
+        raise ExportError(
+            "sync.json undecodable-frame count does not match its index list"
+        )
+    return indices
+
+
+def _decodable_span(
+    frame_count: int,
+    requested_cut_index: int,
+    undecodable: set[int],
+) -> tuple[int, int, int]:
+    cut_index = next(
+        (
+            index
+            for index in range(requested_cut_index, frame_count)
+            if index not in undecodable
+        ),
+        None,
+    )
+    if cut_index is None:
+        raise ExportError(
+            "no decodable source frame remains at or after --start"
+        )
+
+    last_index = next(
+        index
+        for index in range(frame_count - 1, cut_index - 1, -1)
+        if index not in undecodable
+    )
+    missing_in_range = sum(
+        cut_index <= index <= last_index for index in undecodable
+    )
+    expected_frames = last_index - cut_index + 1 - missing_in_range
+    return cut_index, last_index, expected_frames
+
+
 def _read_json(path: Path) -> dict:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -153,17 +234,22 @@ def run(processing: Path, start: str) -> Path:
     if start_seconds > float(video.duration):
         raise ExportError("--start is beyond the end of the video")
 
-    cut_index = next(
+    requested_cut_index = next(
         index
         for index in range(video.frame_count)
         if float(video.elapsed(index)) >= start_seconds
     )
+    undecodable = _undecodable_indices(source_meta, video.frame_count)
+    cut_index, last_index, expected_frames = _decodable_span(
+        video.frame_count,
+        requested_cut_index,
+        undecodable,
+    )
     cut_frame = video.frames[cut_index]
     cut_pts = float(cut_frame.time)
     first_utc = _model_utc(model, cut_pts)
-    last_pts = float(video.frames[-1].time)
+    last_pts = float(video.frames[last_index].time)
     last_utc = _model_utc(model, last_pts)
-    expected_frames = video.frame_count - cut_index
     expected_last_pts = last_utc - first_utc
 
     run_dir = _run_dir(processing)
@@ -227,6 +313,7 @@ def run(processing: Path, start: str) -> Path:
             },
             "sync": str(Path("..") / ".." / "sync.json"),
             "requested_start_s": start_seconds,
+            "requested_start_frame_index": requested_cut_index,
             "actual_start": {
                 "frame_index": cut_index,
                 "source_pts_s": cut_pts,
@@ -234,7 +321,11 @@ def run(processing: Path, start: str) -> Path:
                 "utc": _utc_text(first_utc),
                 "utc_epoch_s": first_utc,
             },
+            "last_source_frame_index": last_index,
             "last_utc": _utc_text(last_utc),
+            "undecodable_source_frames_after_start": sum(
+                index >= cut_index for index in undecodable
+            ),
             "overlay": {
                 "format": "UTC(est.) YYYY-MM-DDTHH:MM:SS.hhZ",
                 "x": 16,

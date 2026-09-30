@@ -51,7 +51,7 @@ This permits multiple exports from one synchronization solution without rerunnin
 
 `--start` is source-video elapsed time, measured from the first real source frame.
 
-For a requested start of 3180 s, choose the first real source frame whose source elapsed time is at least 3180 s.
+For a requested start of 3180 s, choose the first real source frame whose source elapsed time is at least 3180 s. If that indexed source frame is known from Sync to be undecodable, advance to the first later indexed frame not listed in `sync.json.source.undecodable_frame_indices`.
 
 Do not manufacture a frame exactly at 3180.000 s and do not require the cut to coincide with a keyframe.
 
@@ -137,7 +137,7 @@ FFmpeg is used for rendering/encoding rather than reimplementing a video encoder
 
 An Export run is successful only if validation passes, including:
 
-- retained source and rendered frame counts agree;
+- rendered frame count agrees with the retained indexed source-frame count after excluding source frames that Sync recorded as undecodable;
 - output PTS are strictly increasing;
 - first output PTS is zero;
 - output duration agrees with synchronized UTC span within muxing time-base resolution;
