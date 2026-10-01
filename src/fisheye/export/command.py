@@ -166,6 +166,13 @@ def _utc_text_precise(value: float) -> str:
     )
 
 
+def _utc_text_millis(value: float) -> str:
+    total_milliseconds = int(round(value * 1000.0))
+    seconds, milliseconds = divmod(total_milliseconds, 1000)
+    base = datetime.fromtimestamp(seconds, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    return f"{base}.{milliseconds:03d}Z"
+
+
 def _timestamp_overlay_text(first_utc: float) -> str:
     # Shift by half a hundredth so both the whole-second and fractional
     # components round to the displayed 0.01 s resolution.
@@ -242,6 +249,7 @@ def _write_timestamp_csvs(
             estimated_utc = _model_utc(model, source_pts)
             output_pts = estimated_utc - first_utc
             estimated_utc_text = _utc_text_precise(estimated_utc)
+            simple_utc_text = _utc_text_millis(estimated_utc)
 
             detailed.writerow(
                 [
@@ -257,8 +265,8 @@ def _write_timestamp_csvs(
             simple.writerow(
                 [
                     count,
-                    f"{output_pts:.9f}",
-                    estimated_utc_text,
+                    f"{output_pts:.6f}",
+                    simple_utc_text,
                 ]
             )
             count += 1

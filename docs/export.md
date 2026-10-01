@@ -149,7 +149,7 @@ For sharing, Export also writes `timestamps_simple.csv`:
 frame_index,time_s,estimated_utc
 ```
 
-Here `frame_index` is the zero-based output-video frame index and `time_s` is the corresponding zero-based output-video PTS in seconds. The values are generated from the same synchronization model as the detailed table.
+Here `frame_index` is the zero-based output-video frame index and `time_s` is the corresponding zero-based output-video PTS in seconds. The simplified file formats `time_s` to six decimal places and `estimated_utc` to milliseconds (three fractional digits). These are presentation choices for the sharing-oriented table; they do not imply higher absolute timing accuracy. The values are generated from the same synchronization model as the detailed table.
 
 ## `export.json`
 

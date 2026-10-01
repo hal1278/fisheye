@@ -12,6 +12,7 @@ from fisheye.export.command import (
     _output_nominal_fps,
     _parse_progress,
     _timestamp_overlay_text,
+    _utc_text_millis,
     _undecodable_indices,
     _write_timestamp_csvs,
 )
@@ -119,6 +120,10 @@ class ExportCommandTest(TestCase):
                 "progress=end\n"
             )
 
+    def test_utc_text_millis_rounds_and_carries(self):
+        self.assertEqual(_utc_text_millis(1000.1234), "1970-01-01T00:16:40.123Z")
+        self.assertEqual(_utc_text_millis(1000.9996), "1970-01-01T00:16:41.000Z")
+
     def test_timestamp_overlay_uses_corrected_pts_for_hundredths(self):
         text = _timestamp_overlay_text(1000.123)
         self.assertTrue(text.startswith("Estimated UTC: "))
@@ -201,5 +206,7 @@ class ExportCommandTest(TestCase):
         self.assertTrue(content[1].startswith("0,0.000000000,3,"))
         self.assertTrue(content[2].startswith("1,0.200000000,5,"))
         self.assertEqual(simple[0], "frame_index,time_s,estimated_utc")
-        self.assertTrue(simple[1].startswith("0,0.000000000,"))
-        self.assertTrue(simple[2].startswith("1,0.200000000,"))
+        self.assertTrue(simple[1].startswith("0,0.000000,"))
+        self.assertTrue(simple[2].startswith("1,0.200000,"))
+        self.assertTrue(simple[1].endswith("1970-01-01T00:46:40.000Z"))
+        self.assertTrue(simple[2].endswith("1970-01-01T00:46:40.200Z"))
