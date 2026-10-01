@@ -205,8 +205,9 @@ def _input_seek_seconds(video, cut_index: int) -> float:
     return max(0.0, cut_pts - segment_first_pts - 1.0)
 
 
-def _write_timestamps_csv(
-    path: Path,
+def _write_timestamp_csvs(
+    detailed_path: Path,
+    simple_path: Path,
     video,
     cut_index: int,
     last_index: int,
@@ -215,9 +216,13 @@ def _write_timestamps_csv(
     first_utc: float,
 ) -> int:
     count = 0
-    with path.open("w", encoding="utf-8", newline="") as stream:
-        writer = csv.writer(stream)
-        writer.writerow(
+    with (
+        detailed_path.open("w", encoding="utf-8", newline="") as detailed_stream,
+        simple_path.open("w", encoding="utf-8", newline="") as simple_stream,
+    ):
+        detailed = csv.writer(detailed_stream)
+        simple = csv.writer(simple_stream)
+        detailed.writerow(
             [
                 "output_frame_index",
                 "output_pts_s",
@@ -228,20 +233,32 @@ def _write_timestamps_csv(
                 "estimated_utc_epoch_s",
             ]
         )
+        simple.writerow(["frame_index", "time_s", "estimated_utc"])
+
         for source_index in range(cut_index, last_index + 1):
             if source_index in undecodable:
                 continue
             source_pts = float(video.frames[source_index].time)
             estimated_utc = _model_utc(model, source_pts)
-            writer.writerow(
+            output_pts = estimated_utc - first_utc
+            estimated_utc_text = _utc_text_precise(estimated_utc)
+
+            detailed.writerow(
                 [
                     count,
-                    f"{estimated_utc - first_utc:.9f}",
+                    f"{output_pts:.9f}",
                     source_index,
                     f"{source_pts:.9f}",
                     f"{float(video.elapsed(source_index)):.9f}",
-                    _utc_text_precise(estimated_utc),
+                    estimated_utc_text,
                     f"{estimated_utc:.6f}",
+                ]
+            )
+            simple.writerow(
+                [
+                    count,
+                    f"{output_pts:.9f}",
+                    estimated_utc_text,
                 ]
             )
             count += 1
@@ -415,14 +432,17 @@ def run(processing: Path, start: str) -> Path:
     timestamp_file = run_dir / ".timestamp.txt"
     timestamps_path = run_dir / "timestamps.csv"
     timestamps_temp = run_dir / ".timestamps.csv.tmp"
+    timestamps_simple_path = run_dir / "timestamps_simple.csv"
+    timestamps_simple_temp = run_dir / ".timestamps_simple.csv.tmp"
     output = run_dir / "video.mp4"
     log_path = run_dir / "ffmpeg.log"
     ffmpeg = _ffmpeg(capture)
     segments = _input_segments(video, cut_index, last_index)
     first_input_seek_s = _input_seek_seconds(video, cut_index)
 
-    timestamp_rows = _write_timestamps_csv(
+    timestamp_rows = _write_timestamp_csvs(
         timestamps_temp,
+        timestamps_simple_temp,
         video,
         cut_index,
         last_index,
@@ -509,6 +529,7 @@ def run(processing: Path, start: str) -> Path:
         )
         validation["timestamp_rows"] = timestamp_rows
         timestamps_temp.replace(timestamps_path)
+        timestamps_simple_temp.replace(timestamps_simple_path)
         export_json = {
             "schema_version": 1,
             "status": "completed",
@@ -539,6 +560,7 @@ def run(processing: Path, start: str) -> Path:
             },
             "timestamps": {
                 "path": "timestamps.csv",
+                "simple_path": "timestamps_simple.csv",
                 "row_count": timestamp_rows,
                 "estimated_utc": True,
             },
@@ -573,5 +595,9 @@ def run(processing: Path, start: str) -> Path:
             pass
         try:
             timestamps_temp.unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            timestamps_simple_temp.unlink()
         except FileNotFoundError:
             pass

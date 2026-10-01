@@ -55,7 +55,7 @@ uv run fisheye sync recordings/<session>/capture --roi X,Y,W,H
 uv run fisheye export recordings/<session>/processing/<sync-run> --start HH:MM:SS
 ```
 
-Normal export performs lightweight validation and writes `video.mp4`, `timestamps.csv`, `export.json`, and `ffmpeg.log`.
+Normal export performs lightweight validation and writes `video.mp4`, detailed `timestamps.csv`, simplified `timestamps_simple.csv`, `export.json`, and `ffmpeg.log`.
 
 For explicit full-decode verification:
 

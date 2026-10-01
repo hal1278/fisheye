@@ -40,6 +40,7 @@ Expected outputs:
 ```text
 video.mp4
 timestamps.csv
+timestamps_simple.csv
 export.json
 ffmpeg.log
 ```
@@ -132,15 +133,23 @@ FFmpeg is used for rendering/encoding rather than reimplementing a video encoder
 
 The `interleave` filter deliberately marks its output frame rate as variable/unknown. Export therefore sets a fine encoder time base independently and supplies libx264 with a nominal frame rate of `source_nominal_fps / fitted_rate`. This nominal value is encoder metadata/parameterization only: Export does not use `-r` or an `fps` filter, and `-fps_mode passthrough` keeps the corrected per-frame PTS rather than snapping frames to a constant-rate grid.
 
-## `timestamps.csv`
+## Timestamp CSV files
 
-Export also writes one row per retained output frame:
+Export writes a detailed timestamp table, `timestamps.csv`, with one row per retained output frame:
 
 ```text
 output_frame_index,output_pts_s,source_frame_index,source_pts_s,source_elapsed_s,estimated_utc,estimated_utc_epoch_s
 ```
 
 `output_pts_s` follows the same affine synchronization model as the rendered video. `estimated_utc` is ISO 8601 UTC text with microsecond formatting for machine-readable interchange; the extra digits are representation precision and do not imply corresponding absolute timing accuracy. Known undecodable source frames are omitted so the CSV row count matches the decoded output frame count.
+
+For sharing, Export also writes `timestamps_simple.csv`:
+
+```text
+frame_index,time_s,estimated_utc
+```
+
+Here `frame_index` is the zero-based output-video frame index and `time_s` is the corresponding zero-based output-video PTS in seconds. The values are generated from the same synchronization model as the detailed table.
 
 ## `export.json`
 
@@ -156,7 +165,7 @@ output_frame_index,output_pts_s,source_frame_index,source_pts_s,source_elapsed_s
 - expected output frame count and last output PTS;
 - lightweight output validation results;
 - retained input-segment range and first-input seek;
-- `timestamps.csv` provenance and row count;
+- detailed and simplified timestamp CSV paths and row count;
 - validation result.
 
 ## Validation
@@ -172,9 +181,9 @@ A normal Export run performs lightweight validation without decoding the complet
 - the stream start PTS to be zero;
 - container frame-count metadata, when present, to agree with the expected frame count;
 - stream duration to be consistent with the synchronized UTC span;
-- `timestamps.csv` to contain one row per expected output frame.
+- both timestamp CSV files to contain one row per expected output frame.
 
-`timestamps.csv` is generated from the source timeline and synchronization model before encoding and is published only after lightweight validation succeeds.
+The timestamp CSV files are generated from the source timeline and synchronization model before encoding and are published only after lightweight validation succeeds.
 
 For explicit end-to-end verification, run:
 

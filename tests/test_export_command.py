@@ -13,7 +13,7 @@ from fisheye.export.command import (
     _parse_progress,
     _timestamp_overlay_text,
     _undecodable_indices,
-    _write_timestamps_csv,
+    _write_timestamp_csvs,
 )
 from fisheye.media.timeline import FrameRef, SegmentInfo, VirtualVideo
 
@@ -170,7 +170,7 @@ class ExportCommandTest(TestCase):
         )
         self.assertAlmostEqual(_input_seek_seconds(video, 5), 1.5)
 
-    def test_timestamp_csv_omits_undecodable_source_frames(self):
+    def test_timestamp_csvs_omit_undecodable_source_frames(self):
         video = self._video_fixture()
         model = {
             "type": "affine",
@@ -181,8 +181,10 @@ class ExportCommandTest(TestCase):
         }
         with TemporaryDirectory() as directory:
             path = Path(directory) / "timestamps.csv"
-            rows = _write_timestamps_csv(
+            simple_path = Path(directory) / "timestamps_simple.csv"
+            rows = _write_timestamp_csvs(
                 path,
+                simple_path,
                 video,
                 3,
                 5,
@@ -191,9 +193,13 @@ class ExportCommandTest(TestCase):
                 2800.0,
             )
             content = path.read_text(encoding="utf-8").splitlines()
+            simple = simple_path.read_text(encoding="utf-8").splitlines()
 
         self.assertEqual(rows, 2)
         self.assertEqual(len(content), 3)
         self.assertIn("source_frame_index", content[0])
         self.assertTrue(content[1].startswith("0,0.000000000,3,"))
         self.assertTrue(content[2].startswith("1,0.200000000,5,"))
+        self.assertEqual(simple[0], "frame_index,time_s,estimated_utc")
+        self.assertTrue(simple[1].startswith("0,0.000000000,"))
+        self.assertTrue(simple[2].startswith("1,0.200000000,"))
